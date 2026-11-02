@@ -1,0 +1,92 @@
+# llmux
+
+[![ci](https://github.com/Felps-LDL/llmux/actions/workflows/ci.yml/badge.svg)](https://github.com/Felps-LDL/llmux/actions/workflows/ci.yml)
+
+Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
+provedores, com fallback, rate limiting, cache, contabilidade de custo e
+observabilidade.
+
+> **Estado:** Fase 0 de 5. Hoje o repositório tem a fundação (build, lint,
+> testes, imagem e CI). O que está descrito abaixo como arquitetura é o alvo,
+> construído fase a fase.
+
+## O alvo
+
+O cliente usa o SDK da OpenAI que já tem e troca só a `base_url`. Em vez de um
+modelo físico, pede um modelo lógico (`"fast"`, `"smart"`), e a configuração
+decide quais provedores atendem, em que ordem.
+
+```
+  cliente  ────►  API (Go)  ──┬──►  rate limit  (Redis)
+ (SDK OpenAI)                 ├──►  cache       (Redis)
+                              └──►  router + circuit breaker
+                                         │
+                            ┌────────────┼────────────┐
+                            ▼            ▼            ▼
+                         OpenAI      Anthropic      Ollama
+
+  API ──► fila de uso    ──► worker ──► Postgres (agregação de custo)
+  API ──► fila de batch  ──► worker ──► processa lote
+```
+
+- **Fallback com circuit breaker:** 429, 5xx ou timeout cai para o próximo
+  provedor; provedor fora do ar não recebe tráfego até se recuperar.
+- **Rate limit por requisição e por token:** em LLM, tokens por minuto é o
+  limite que importa.
+- **Cache exato** por hash do prompt e dos parâmetros.
+- **Caminho crítico síncrono**, com streaming. Assíncrono só para eventos de
+  uso e processamento em lote.
+
+## Fases
+
+| Fase | Escopo | Estado |
+|---|---|---|
+| 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
+| 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, endpoint sem streaming | — |
+| 2 | Streaming SSE, rate limit e cache no Redis, Postgres, testcontainers | — |
+| 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
+| 4 | Fila de uso e worker, `/v1/batches` | — |
+| 5 | Kubernetes com HPA pela fila | — |
+
+## Rodando
+
+Requer Go 1.27, golangci-lint 2.x e Docker.
+
+```
+make              # lint, test e build: o mesmo que o CI roda
+make run          # roda o gateway localmente
+make docker-build # gera a imagem llmux-gateway:dev
+```
+
+Configuração por variável de ambiente:
+
+| Variável | Default | Uso |
+|---|---|---|
+| `LLMUX_ADDR` | `:8080` | endereço do servidor (lido hoje; o servidor entra na Fase 1) |
+
+## Decisões
+
+Cada decisão relevante tem um ADR em [`docs/decisions/`](docs/decisions/).
+
+- [0001 — Imagem de runtime distroless](docs/decisions/0001-imagem-distroless.md)
+
+## Custo
+
+O Ollama local é o provedor padrão de desenvolvimento. Uma chave paga com limite
+baixo serve só para provar que o gateway funciona com provedor real. Os testes
+usam um provedor falso: o núcleo é testável sem rede, sem chave e sem custo.
+
+## O que ficou de fora e por quê
+
+- **Cache semântico.** Exige embeddings em toda requisição (custo) e pode
+  devolver a resposta de uma pergunta parecida, mas diferente (correção). O
+  cache exato não tem esse risco.
+- **Multi-tenancy completo.** Isolamento real entre clientes (quotas, dados,
+  chaves por tenant) é um produto por si só. Aqui a chave de API identifica o
+  consumidor para rate limit e custo, e para por aí.
+- **Interface de administração.** Configuração é arquivo versionado; métricas
+  e dashboards vêm do Grafana.
+- **Entrada de imagem e áudio.** Multiplica os formatos a normalizar entre
+  provedores sem mudar nenhuma das decisões de arquitetura que o projeto quer
+  demonstrar.
+- **Fine-tuning.** É outro problema: treinamento, não roteamento.
