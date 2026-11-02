@@ -16,7 +16,7 @@ type config struct {
 // ambiente real do processo.
 func loadConfig(getenv func(string) string) config {
 	cfg := config{Addr: defaultAddr}
-	if v := getenv("LLMUX_PORT"); v != "" {
+	if v := getenv("LLMUX_ADDR"); v != "" {
 		cfg.Addr = v
 	}
 	return cfg
