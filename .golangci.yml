@@ -1,0 +1,17 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    # Garante a convenção de embrulhar com %w e comparar com errors.Is/As;
+    # o router depende de distinguir 429/timeout de outros erros para o fallback.
+    - errorlint
+    # Body de resposta não fechado vaza conexão; com chamadas a provedores em
+    # todo request, isso esgota o pool sob carga.
+    - bodyclose
+    # Request HTTP sem context não é cancelável: timeout e fallback não funcionam.
+    - noctx
+
+formatters:
+  enable:
+    - gofmt

@@ -18,8 +18,11 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **0**
-Última coisa concluída: _(nada ainda)_
+Fase: **1** (próxima: interface `Provider` e provedor falso)
+Última coisa concluída: Fase 0 fechada no PR #1 (esqueleto, teste mínimo,
+Makefile, golangci-lint v2, Dockerfile distroless + ADR 0001, CI, README,
+backlog). CI validado verde → vermelho → verde, `main` protegida por ruleset
+com `lint`, `test` e `build` obrigatórios.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
