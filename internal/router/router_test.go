@@ -410,3 +410,41 @@ func TestChatDevolveErroQuandoTodosOsCircuitosEstaoAbertos(t *testing.T) {
 		t.Errorf("chamadas em B = %d, want 1", got)
 	}
 }
+
+func TestChatNaoAbreCircuitoQuandoClienteDesiste(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	calls := 0
+	a := providerFunc(func(context.Context, provider.ChatRequest) (*provider.ChatResponse, error) {
+		calls++
+		if calls == 1 {
+			cancel()
+			return nil, provider.ErrTimeout
+		}
+		return &provider.ChatResponse{Content: "resposta de a"}, nil
+	})
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "resposta de b"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second, router.BreakerConfig{Threshold: 1, Cooldown: time.Minute})
+
+	_, err := r.Chat(ctx, "fast", provider.ChatRequest{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("primeiro pedido: erro = %v, want %v", err, context.Canceled)
+	}
+
+	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("segundo pedido: erro inesperado: %v", err)
+	}
+	if res.Provider != "func" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "func")
+	}
+	if got := len(b.Calls()); got != 0 {
+		t.Errorf("chamadas em B = %d, want 0", got)
+	}
+}
