@@ -217,3 +217,32 @@ func TestChatDevolveErroComModeloDesconhecido(t *testing.T) {
 		t.Errorf("chamadas em A = %d, want 0", got)
 	}
 }
+
+func TestChatNaoChamaSegundoProvedorQuandoPrimeiroResponde(t *testing.T) {
+	a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "resposta de a"}))
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "resposta de b"}))
+
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second)
+
+	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if res.Provider != "a" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "a")
+	}
+	if res.Response == nil {
+		t.Fatal("Response = nil, want resposta de a")
+	}
+	if res.Response.Content != "resposta de a" {
+		t.Errorf("Content = %q, want %q", res.Response.Content, "resposta de a")
+	}
+	if got := len(b.Calls()); got != 0 {
+		t.Errorf("chamadas em B = %d, want 0", got)
+	}
+}
