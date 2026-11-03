@@ -11,6 +11,10 @@ import (
 	"github.com/Felps-LDL/llmux/internal/router"
 )
 
+// O limite alto mantém o circuito fechado: estes testes são sobre o fallback, e os
+// sobre o breaker definem a própria configuração.
+var testBreaker = router.BreakerConfig{Threshold: 100, Cooldown: time.Minute}
+
 func TestChatFazFallback(t *testing.T) {
 	tests := []struct {
 		name string
@@ -30,7 +34,7 @@ func TestChatFazFallback(t *testing.T) {
 					{Provider: a, Model: "modelo-a"},
 					{Provider: b, Model: "modelo-b"},
 				},
-			}, time.Second)
+			}, time.Second, testBreaker)
 
 			res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
 
@@ -56,7 +60,7 @@ func TestChatNaoFazFallbackComErroSemClasse(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
 
@@ -76,7 +80,7 @@ func TestChatEnviaNomeFisicoDeCadaRota(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{Model: "fast"})
 	if err != nil {
@@ -108,7 +112,7 @@ func TestChatNaoChamaProvedorComContextoCancelado(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -156,7 +160,7 @@ func TestChatNaoFazFallbackSeClienteDesisteDuranteTentativa(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	_, err := r.Chat(ctx, "fast", provider.ChatRequest{})
 
@@ -189,7 +193,7 @@ func TestChatFazFallbackQuandoProvedorTrava(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, 10*time.Millisecond)
+	}, 10*time.Millisecond, testBreaker)
 
 	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
 	if err != nil {
@@ -207,7 +211,7 @@ func TestChatDevolveErroComModeloDesconhecido(t *testing.T) {
 		"fast": {
 			{Provider: a, Model: "modelo-a"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	_, err := r.Chat(t.Context(), "modelo-desconhecido", provider.ChatRequest{})
 	if !errors.Is(err, router.ErrUnknownModel) {
@@ -227,7 +231,7 @@ func TestChatNaoChamaSegundoProvedorQuandoPrimeiroResponde(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
 	if err != nil {
@@ -256,7 +260,7 @@ func TestChatGuardaFalhaDeCadaProvedorQuandoTodosFalham(t *testing.T) {
 			{Provider: a, Model: "modelo-a"},
 			{Provider: b, Model: "modelo-b"},
 		},
-	}, time.Second)
+	}, time.Second, testBreaker)
 
 	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
 
@@ -265,5 +269,48 @@ func TestChatGuardaFalhaDeCadaProvedorQuandoTodosFalham(t *testing.T) {
 	}
 	if !errors.Is(err, provider.ErrUnavailable) {
 		t.Errorf("erro = %v, want %v", err, provider.ErrUnavailable)
+	}
+}
+
+func TestChatPulaProvedorComCircuitoAberto(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "indisponível", err: provider.ErrUnavailable},
+		{name: "tempo esgotado", err: provider.ErrTimeout},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := fake.New("a", fake.Fail(tt.err))
+			b := fake.New("b",
+				fake.Reply(provider.ChatResponse{Content: "primeira"}),
+				fake.Reply(provider.ChatResponse{Content: "segunda"}),
+			)
+			r := router.New(map[string][]router.Route{
+				"fast": {
+					{Provider: a, Model: "modelo-a"},
+					{Provider: b, Model: "modelo-b"},
+				},
+			}, time.Second, router.BreakerConfig{Threshold: 1, Cooldown: time.Minute})
+
+			_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+			if err != nil {
+				t.Fatalf("primeiro pedido: erro inesperado: %v", err)
+			}
+
+			res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+			if err != nil {
+				t.Fatalf("segundo pedido: erro inesperado: %v", err)
+			}
+			if res.Provider != "b" {
+				t.Errorf("Provider = %q, want %q", res.Provider, "b")
+			}
+
+			if got := len(a.Calls()); got != 1 {
+				t.Errorf("chamadas em A = %d, want 1", got)
+			}
+		})
 	}
 }
