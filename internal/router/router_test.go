@@ -314,3 +314,34 @@ func TestChatPulaProvedorComCircuitoAberto(t *testing.T) {
 		})
 	}
 }
+
+func TestChatNaoAbreCircuitoComLimiteExcedido(t *testing.T) {
+	a := fake.New("a",
+		fake.Fail(provider.ErrRateLimited),
+		fake.Reply(provider.ChatResponse{Content: "resposta de a"}),
+	)
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "resposta de b"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second, router.BreakerConfig{Threshold: 1, Cooldown: time.Minute})
+
+	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("primeiro pedido: erro inesperado: %v", err)
+	}
+
+	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("segundo pedido: erro inesperado: %v", err)
+	}
+	if res.Provider != "a" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "a")
+	}
+
+	if got := len(a.Calls()); got != 2 {
+		t.Errorf("chamadas em A = %d, want 2", got)
+	}
+}
