@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -113,5 +114,23 @@ func TestBreakerRespostaAtrasadaNaoFechaCircuito(t *testing.T) {
 
 	if b.allow() {
 		t.Fatal("allow() = true após sucesso da resposta atrasada, want false")
+	}
+}
+
+func TestRecordFechaCircuitoQuandoSondaTemSucesso(t *testing.T) {
+	br := newBreaker(1, 0, time.Now)
+	br.failure()
+
+	if !br.allow() {
+		t.Fatal("allow() = false após cooldown, want true (a sonda)")
+	}
+
+	record(context.Background(), br, nil)
+
+	if !br.allow() {
+		t.Fatal("allow() = false após sucesso da sonda, want true")
+	}
+	if !br.allow() {
+		t.Fatal("allow() = false após sucesso da sonda, want true")
 	}
 }
