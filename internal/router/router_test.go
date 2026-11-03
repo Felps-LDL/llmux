@@ -468,3 +468,43 @@ func TestChatDivideCircuitoEntreModelosDoMesmoProvedor(t *testing.T) {
 		t.Errorf("chamadas em A = %d, want 1", got)
 	}
 }
+
+func TestChatVoltaAUsarProvedorRecuperado(t *testing.T) {
+	a := fake.New("a",
+		fake.Fail(provider.ErrUnavailable),
+		fake.Reply(provider.ChatResponse{Content: "sonda"}),
+		fake.Reply(provider.ChatResponse{Content: "normal"}),
+	)
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "resposta de b"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second, router.BreakerConfig{Threshold: 1, Cooldown: 0})
+
+	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("primeiro pedido: erro inesperado: %v", err)
+	}
+	if res.Provider != "b" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "b")
+	}
+	res, err = r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("segundo pedido: erro inesperado: %v", err)
+	}
+	if res.Provider != "a" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "a")
+	}
+	res, err = r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("terceiro pedido: erro inesperado: %v", err)
+	}
+	if res.Provider != "a" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "a")
+	}
+	if got := len(b.Calls()); got != 1 {
+		t.Errorf("chamadas em B = %d, want 1", got)
+	}
+}
