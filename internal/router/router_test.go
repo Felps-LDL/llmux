@@ -381,3 +381,32 @@ func TestChatNaoAbreCircuitoComErroSemClasse(t *testing.T) {
 		t.Errorf("chamadas em B = %d, want 0", got)
 	}
 }
+
+func TestChatDevolveErroQuandoTodosOsCircuitosEstaoAbertos(t *testing.T) {
+	a := fake.New("a", fake.Fail(provider.ErrUnavailable))
+	b := fake.New("b", fake.Fail(provider.ErrUnavailable))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second, router.BreakerConfig{Threshold: 1, Cooldown: time.Minute})
+
+	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if !errors.Is(err, provider.ErrUnavailable) {
+		t.Fatalf("primeiro pedido: erro = %v, want %v", err, provider.ErrUnavailable)
+	}
+
+	_, err = r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if !errors.Is(err, router.ErrCircuitOpen) {
+		t.Fatalf("segundo pedido: erro = %v, want %v", err, router.ErrCircuitOpen)
+	}
+
+	if got := len(a.Calls()); got != 1 {
+		t.Errorf("chamadas em A = %d, want 1", got)
+	}
+
+	if got := len(b.Calls()); got != 1 {
+		t.Errorf("chamadas em B = %d, want 1", got)
+	}
+}
