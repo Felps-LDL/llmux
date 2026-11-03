@@ -3,6 +3,7 @@ package router_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -506,5 +507,56 @@ func TestChatVoltaAUsarProvedorRecuperado(t *testing.T) {
 	}
 	if got := len(b.Calls()); got != 1 {
 		t.Errorf("chamadas em B = %d, want 1", got)
+	}
+}
+
+// Verifica o caminho inteiro sob carga: pedidos simultâneos dividem o mesmo router
+// e os mesmos breakers. Cada um precisa fazer o fallback sem perder resposta, e o
+// -race acusa qualquer estado compartilhado sem trava nesse caminho.
+func TestChatAtendePedidosConcorrentes(t *testing.T) {
+	// Abaixo do limite de testBreaker: o circuito não pode abrir no meio do teste,
+	// senão a contagem de chamadas em A dependeria da ordem das goroutines.
+	const requests = 50
+
+	aSteps := make([]fake.Step, requests)
+	bSteps := make([]fake.Step, requests)
+	for i := range requests {
+		aSteps[i] = fake.Fail(provider.ErrUnavailable)
+		bSteps[i] = fake.Reply(provider.ChatResponse{Content: "olá"})
+	}
+	a := fake.New("a", aSteps...)
+	b := fake.New("b", bSteps...)
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second, testBreaker)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Go(func() {
+			<-start
+			res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+			// Errorf, e não Fatalf: Fatalf só pode ser chamado na goroutine do
+			// teste, porque ele encerra a goroutine que o chamou.
+			if err != nil {
+				t.Errorf("erro inesperado: %v", err)
+				return
+			}
+			if res.Provider != "b" {
+				t.Errorf("Provider = %q, want %q", res.Provider, "b")
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	if got := len(a.Calls()); got != requests {
+		t.Errorf("chamadas em A = %d, want %d", got, requests)
+	}
+	if got := len(b.Calls()); got != requests {
+		t.Errorf("chamadas em B = %d, want %d", got, requests)
 	}
 }

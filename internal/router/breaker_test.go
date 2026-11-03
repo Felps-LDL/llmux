@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -132,5 +134,37 @@ func TestRecordFechaCircuitoQuandoSondaTemSucesso(t *testing.T) {
 	}
 	if !br.allow() {
 		t.Fatal("allow() = false após sucesso da sonda, want true")
+	}
+}
+
+// Verifica a garantia que só existe sob concorrência: entre pedidos simultâneos,
+// um único vence a vaga da sonda. Em sequência, este teste não provaria nada, e
+// sem a trava em allow vários pedidos poderiam martelar um provedor em recuperação.
+func TestBreakerLiberaUmaSondaEntrePedidosConcorrentes(t *testing.T) {
+	b := newBreaker(1, 0, time.Now)
+	b.failure()
+
+	const requests = 100
+	// atomic porque o próprio contador é disputado: um int comum faria o -race
+	// acusar o teste, e não o breaker.
+	var allowed atomic.Int64
+	// Fechar o canal solta todas as goroutines juntas. Sem isso, as primeiras
+	// poderiam terminar antes de as últimas começarem, e não haveria disputa.
+	start := make(chan struct{})
+
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Go(func() {
+			<-start
+			if b.allow() {
+				allowed.Add(1)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	if got := allowed.Load(); got != 1 {
+		t.Errorf("pedidos liberados = %d, want 1", got)
 	}
 }
