@@ -66,3 +66,35 @@ func TestChatNaoFazFallbackComErroSemClasse(t *testing.T) {
 		t.Errorf("chamadas em B = %d, want 0", got)
 	}
 }
+
+func TestChatEnviaNomeFisicoDeCadaRota(t *testing.T) {
+	a := fake.New("a", fake.Fail(provider.ErrUnavailable))
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second)
+
+	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{Model: "fast"})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	callsA := a.Calls()
+	if len(callsA) != 1 {
+		t.Fatalf("chamadas em A = %d, want 1", len(callsA))
+	}
+	if callsA[0].Model != "modelo-a" {
+		t.Errorf("Model em A = %q, want %q", callsA[0].Model, "modelo-a")
+	}
+
+	callsB := b.Calls()
+	if len(callsB) != 1 {
+		t.Fatalf("chamadas em B = %d, want 1", len(callsB))
+	}
+	if callsB[0].Model != "modelo-b" {
+		t.Errorf("Model em B = %q, want %q", callsB[0].Model, "modelo-b")
+	}
+}
