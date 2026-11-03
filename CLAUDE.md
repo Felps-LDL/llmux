@@ -82,9 +82,12 @@ Interface central, tudo é escrito contra ela:
 type Provider interface {
     Name() string
     Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
-    ChatStream(ctx context.Context, req ChatRequest) (StreamReader, error)
 }
 ```
+
+`ChatStream(ctx, req) (StreamReader, error)` entra na interface na Fase 2, junto com
+o streaming. Antes disso, toda implementação teria um stub devolvendo "não
+implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum faz.
 
 ## Fases
 
@@ -92,7 +95,7 @@ type Provider interface {
 |---|---|
 | **0** | Repo, Makefile, golangci-lint, CI verde, Dockerfile, README com o alvo |
 | **1** | Interface `Provider`, provedor falso, router com fallback e breaker, contagem de token e custo, endpoint sem streaming, cobertura alta |
-| **2** | Streaming SSE, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
+| **2** | Streaming SSE (`ChatStream` em `Provider`), rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
 | **3** | slog com request_id, métricas Prometheus, tracing OTel, dashboard Grafana, prints no README |
 | **4** | Fila de uso e worker, `/v1/batches`, métrica de profundidade de fila |
 | **5** | Kubernetes: deployments separados, HPA pela fila, kind documentado |
