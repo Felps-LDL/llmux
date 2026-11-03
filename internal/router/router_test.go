@@ -200,3 +200,20 @@ func TestChatFazFallbackQuandoProvedorTrava(t *testing.T) {
 		t.Errorf("Provider = %q, want %q", res.Provider, "b")
 	}
 }
+
+func TestChatDevolveErroComModeloDesconhecido(t *testing.T) {
+	a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+		},
+	}, time.Second)
+
+	_, err := r.Chat(t.Context(), "modelo-desconhecido", provider.ChatRequest{})
+	if !errors.Is(err, router.ErrUnknownModel) {
+		t.Errorf("erro = %v, want %v", err, router.ErrUnknownModel)
+	}
+	if got := len(a.Calls()); got != 0 {
+		t.Errorf("chamadas em A = %d, want 0", got)
+	}
+}
