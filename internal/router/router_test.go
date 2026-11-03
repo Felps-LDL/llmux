@@ -125,3 +125,78 @@ func TestChatNaoChamaProvedorComContextoCancelado(t *testing.T) {
 		t.Errorf("chamadas em B = %d, want 0", got)
 	}
 }
+
+// providerFunc permite que um teste defina o que acontece durante a chamada, o
+// que o roteiro do falso não consegue expressar.
+type providerFunc func(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error)
+
+func (f providerFunc) Name() string { return "func" }
+
+func (f providerFunc) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+	return f(ctx, req)
+}
+
+// Verifica o caso que o teste de contexto cancelado não alcança: o cliente
+// desiste enquanto o A está em andamento. Importa porque a próxima tentativa
+// poderia custar dinheiro por uma resposta que ninguém vai ler.
+func TestChatNaoFazFallbackSeClienteDesisteDuranteTentativa(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	// O A falha com uma classe que aciona fallback. Com um erro sem classe, o
+	// router pararia de qualquer forma, e o teste não provaria nada sobre o
+	// contexto.
+	a := providerFunc(func(context.Context, provider.ChatRequest) (*provider.ChatResponse, error) {
+		cancel()
+		return nil, provider.ErrUnavailable
+	})
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second)
+
+	_, err := r.Chat(ctx, "fast", provider.ChatRequest{})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("erro = %v, want %v", err, context.Canceled)
+	}
+	if got := len(b.Calls()); got != 0 {
+		t.Errorf("chamadas em B = %d, want 0", got)
+	}
+}
+
+// Verifica o motivo de o timeout ser por tentativa: um provedor travado não pode
+// impedir o fallback. O sucesso do B também prova que o prazo é próprio de cada
+// tentativa, porque um prazo compartilhado já teria expirado quando ele fosse
+// chamado.
+func TestChatFazFallbackQuandoProvedorTrava(t *testing.T) {
+	a := providerFunc(func(ctx context.Context, _ provider.ChatRequest) (*provider.ChatResponse, error) {
+		select {
+		case <-ctx.Done():
+			return nil, provider.ErrTimeout
+		// Sem este caso, um router sem timeout travaria o teste até o limite do
+		// go test, em vez de reprovar com uma mensagem clara.
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("o router não deu prazo à tentativa")
+		}
+	})
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, 10*time.Millisecond)
+
+	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+
+	if res.Provider != "b" {
+		t.Errorf("Provider = %q, want %q", res.Provider, "b")
+	}
+}
