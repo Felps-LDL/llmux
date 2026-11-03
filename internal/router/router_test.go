@@ -246,3 +246,24 @@ func TestChatNaoChamaSegundoProvedorQuandoPrimeiroResponde(t *testing.T) {
 		t.Errorf("chamadas em B = %d, want 0", got)
 	}
 }
+
+func TestChatGuardaFalhaDeCadaProvedorQuandoTodosFalham(t *testing.T) {
+	a := fake.New("a", fake.Fail(provider.ErrTimeout))
+	b := fake.New("b", fake.Fail(provider.ErrUnavailable))
+
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second)
+
+	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+
+	if !errors.Is(err, provider.ErrTimeout) {
+		t.Errorf("erro = %v, want %v", err, provider.ErrTimeout)
+	}
+	if !errors.Is(err, provider.ErrUnavailable) {
+		t.Errorf("erro = %v, want %v", err, provider.ErrUnavailable)
+	}
+}
