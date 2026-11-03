@@ -1,6 +1,7 @@
 package router_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -42,5 +43,26 @@ func TestChatFazFallback(t *testing.T) {
 				t.Errorf("chamadas em A = %d, want 1", got)
 			}
 		})
+	}
+}
+
+func TestChatNaoFazFallbackComErroSemClasse(t *testing.T) {
+	errSemClasse := errors.New("status 401")
+	a := fake.New("a", fake.Fail(errSemClasse))
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second)
+
+	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{})
+
+	if !errors.Is(err, errSemClasse) {
+		t.Errorf("erro = %v, want %v", err, errSemClasse)
+	}
+	if got := len(b.Calls()); got != 0 {
+		t.Errorf("chamadas em B = %d, want 0", got)
 	}
 }
