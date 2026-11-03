@@ -1,6 +1,7 @@
 package router_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -96,5 +97,31 @@ func TestChatEnviaNomeFisicoDeCadaRota(t *testing.T) {
 	}
 	if callsB[0].Model != "modelo-b" {
 		t.Errorf("Model em B = %q, want %q", callsB[0].Model, "modelo-b")
+	}
+}
+
+func TestChatNaoChamaProvedorComContextoCancelado(t *testing.T) {
+	a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {
+			{Provider: a, Model: "modelo-a"},
+			{Provider: b, Model: "modelo-b"},
+		},
+	}, time.Second)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := r.Chat(ctx, "fast", provider.ChatRequest{})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("erro = %v, want %v", err, context.Canceled)
+	}
+	if got := len(a.Calls()); got != 0 {
+		t.Errorf("chamadas em A = %d, want 0", got)
+	}
+	if got := len(b.Calls()); got != 0 {
+		t.Errorf("chamadas em B = %d, want 0", got)
 	}
 }
