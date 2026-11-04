@@ -168,3 +168,22 @@ func TestBreakerLiberaUmaSondaEntrePedidosConcorrentes(t *testing.T) {
 		t.Errorf("pedidos liberados = %d, want 1", got)
 	}
 }
+
+func TestBreakerContaFalhasConcorrentes(t *testing.T) {
+	const failures = 100
+	b := newBreaker(failures, time.Minute, time.Now)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range failures {
+		wg.Go(func() {
+			<-start
+			b.failure()
+		})
+	}
+	close(start)
+	wg.Wait()
+	if b.allow() {
+		t.Fatal("allow() = true após falhas concorrentes, want false")
+	}
+}
