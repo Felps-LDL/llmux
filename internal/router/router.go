@@ -29,9 +29,12 @@ type Route struct {
 	Model    string
 }
 
-// Result é uma resposta com o nome do provedor que a produziu.
+// Result é uma resposta com o provedor e o modelo da rota que a produziu.
 type Result struct {
 	Provider string
+	// Model é o nome físico da rota, usado no cálculo de custo (ver ADR 0002). Não
+	// é o mesmo que Response.Model, que é o nome reportado pelo provedor.
+	Model    string
 	Response *provider.ChatResponse
 }
 
@@ -86,7 +89,7 @@ func (r *Router) Chat(ctx context.Context, model string, req provider.ChatReques
 		resp, err := r.attempt(ctx, route, req)
 		record(ctx, br, err)
 		if err == nil {
-			return &Result{Provider: route.Provider.Name(), Response: resp}, nil
+			return &Result{Provider: route.Provider.Name(), Model: route.Model, Response: resp}, nil
 		}
 
 		err = fmt.Errorf("%s: %w", route.Provider.Name(), err)

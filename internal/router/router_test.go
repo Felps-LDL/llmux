@@ -83,9 +83,12 @@ func TestChatEnviaNomeFisicoDeCadaRota(t *testing.T) {
 		},
 	}, time.Second, testBreaker)
 
-	_, err := r.Chat(t.Context(), "fast", provider.ChatRequest{Model: "fast"})
+	res, err := r.Chat(t.Context(), "fast", provider.ChatRequest{Model: "fast"})
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
+	}
+	if res.Model != "modelo-b" {
+		t.Errorf("Model = %q, want %q", res.Model, "modelo-b")
 	}
 
 	callsA := a.Calls()
