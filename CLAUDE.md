@@ -95,9 +95,9 @@ implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum 
 |---|---|
 | **0** | Repo, Makefile, golangci-lint, CI verde, Dockerfile, README com o alvo |
 | **1** | Interface `Provider`, provedor falso, router com fallback e breaker, contagem de token e custo, carga de config, adaptador do Ollama, endpoint sem streaming, cobertura alta |
-| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
+| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit no Redis, cache exato, Postgres e migrations (chaves de API), testcontainers, docker-compose |
 | **3** | slog com request_id, métricas Prometheus, tracing OTel, dashboard Grafana, prints no README |
-| **4** | Fila de uso e worker, `/v1/batches`, métrica de profundidade de fila |
+| **4** | Fila de uso e worker, tabelas de uso no Postgres, `/v1/batches`, métrica de profundidade de fila |
 | **5** | Kubernetes: deployments separados, HPA pela fila, kind documentado |
 
 **Não implemente nada de uma fase futura.** Se você sugerir algo fora da fase atual e
@@ -123,6 +123,9 @@ llm_queue_depth{queue}
 - **Fases 0 e 1** — você escreve, com a explicação vindo antes do código. O Felipe revisa
   linha por linha e pergunta o que não entendeu.
 - **Fases 2 e 3** — você propõe a abordagem e as armadilhas; o Felipe escreve; você revisa.
+  Transição gradual, por decisão do Felipe: nos primeiros componentes da Fase 2, você
+  também passa a estrutura com lacunas, cada vez maiores, até ele escrever sozinho. Ao
+  fim de cada componente, ele explica com as próprias palavras o que escreveu.
 - **Fases 4 e 5** — o Felipe escreve; você só revisa e questiona. Não escreva a solução
   antes de ele tentar.
 
