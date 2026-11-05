@@ -17,11 +17,17 @@ type Route struct {
 	Model    string `json:"model"`
 }
 
+// Provider guarda como alcançar um provedor.
+type Provider struct {
+	BaseURL string `json:"base_url"`
+}
+
 // Config é a configuração já validada.
 type Config struct {
 	AttemptTimeout   time.Duration
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+	Providers        map[string]Provider
 	Models           map[string][]Route
 	Prices           usage.PriceTable
 }
@@ -58,8 +64,9 @@ type rawConfig struct {
 		Threshold int      `json:"threshold"`
 		Cooldown  duration `json:"cooldown"`
 	} `json:"breaker"`
-	Models map[string][]Route `json:"models"`
-	Prices []rawPrice         `json:"prices"`
+	Providers map[string]Provider `json:"providers"`
+	Models    map[string][]Route  `json:"models"`
+	Prices    []rawPrice          `json:"prices"`
 }
 
 // Load lê e valida a configuração. Devolve todos os problemas de uma vez, para
@@ -88,6 +95,12 @@ func Load(r io.Reader) (*Config, error) {
 	// Zero faria um provedor morto receber uma sonda a cada pedido.
 	if raw.Breaker.Cooldown <= 0 {
 		problems = append(problems, errors.New("breaker.cooldown precisa ser positivo"))
+	}
+
+	for name, p := range raw.Providers {
+		if p.BaseURL == "" {
+			problems = append(problems, fmt.Errorf("provedor %q precisa de base_url", name))
+		}
 	}
 
 	prices := make(usage.PriceTable, len(raw.Prices))
@@ -120,6 +133,9 @@ func Load(r io.Reader) (*Config, error) {
 				problems = append(problems, fmt.Errorf("modelo %q tem rota sem provider ou model", name))
 				continue
 			}
+			if _, ok := raw.Providers[route.Provider]; !ok {
+				problems = append(problems, fmt.Errorf("modelo %q usa o provedor %q, que não está em providers", name, route.Provider))
+			}
 			// Aqui o gateway se recusa a subir sem preço, em vez de zerar o custo em
 			// produção (ADR 0002). Reutiliza o erro de usage: é o mesmo problema.
 			if _, ok := prices[usage.ModelKey{Provider: route.Provider, Model: route.Model}]; !ok {
@@ -136,6 +152,7 @@ func Load(r io.Reader) (*Config, error) {
 		AttemptTimeout:   time.Duration(raw.AttemptTimeout),
 		BreakerThreshold: raw.Breaker.Threshold,
 		BreakerCooldown:  time.Duration(raw.Breaker.Cooldown),
+		Providers:        raw.Providers,
 		Models:           raw.Models,
 		Prices:           prices,
 	}, nil

@@ -14,7 +14,8 @@ const valid = `{
         "attempt_timeout": "30s",
         "breaker": {"threshold": 5, "cooldown": "1m"},
         "models": {"fast": [{"provider": "ollama", "model": "m"}]},
-        "prices": [{"provider": "ollama", "model": "m", "input_per_million": 0, "output_per_million": 0}]
+        "prices": [{"provider": "ollama", "model": "m", "input_per_million": 0, "output_per_million": 0}],
+        "providers": {"ollama": {"base_url": "http://localhost:11434"}}
 }`
 
 func TestLoadAceitaConfigValida(t *testing.T) {
@@ -39,6 +40,10 @@ func TestLoadAceitaConfigValida(t *testing.T) {
 	if cfg.BreakerCooldown != time.Minute {
 		t.Errorf("BreakerCooldown = %v, want %v", cfg.BreakerCooldown, time.Minute)
 	}
+
+	if got := cfg.Providers["ollama"].BaseURL; got != "http://localhost:11434" {
+		t.Errorf("BaseURL = %q, want %q", got, "http://localhost:11434")
+	}
 }
 
 func TestLoadRecusaConfigInvalida(t *testing.T) {
@@ -58,6 +63,8 @@ func TestLoadRecusaConfigInvalida(t *testing.T) {
 		{name: "rota sem provider", old: `"provider": "ollama"`, new: `"provider": ""`, want: "sem provider"},
 		{name: "sem modelos", old: `{"fast": [{"provider": "ollama", "model": "m"}]}`, new: `{}`, want: "pelo menos um modelo"},
 		{name: "modelo sem rotas", old: `[{"provider": "ollama", "model": "m"}]`, new: `[]`, want: "não tem rotas"},
+		{name: "provedor não configurado", old: `"providers": {"ollama": {"base_url": "http://localhost:11434"}}`, new: `"providers": {}`, want: "não está em providers"},
+		{name: "provedor sem base_url", old: `"http://localhost:11434"`, new: `""`, want: "base_url"},
 	}
 
 	for _, tt := range tests {
