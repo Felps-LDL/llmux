@@ -18,11 +18,11 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **1** (próxima: interface `Provider` e provedor falso)
-Última coisa concluída: Fase 0 fechada no PR #1 (esqueleto, teste mínimo,
-Makefile, golangci-lint v2, Dockerfile distroless + ADR 0001, CI, README,
-backlog). CI validado verde → vermelho → verde, `main` protegida por ruleset
-com `lint`, `test` e `build` obrigatórios.
+Fase: **1** (em fechamento: faltam push, PR com CI, perguntas de entrevista e merge)
+Última coisa concluída: código da Fase 1 (router, breaker, custo, config, adaptador do
+Ollama, endpoint e servidor), ADRs 0002 e 0003. Provado de ponta a ponta com o Ollama
+real, no binário e no container, e com o SDK oficial em Go. O CI ainda não rodou nesse
+código, porque a branch `fase-1` não foi enviada.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 

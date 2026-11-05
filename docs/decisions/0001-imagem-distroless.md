@@ -14,7 +14,8 @@ usado (superfície de ataque e tamanho) e execução sem root.
 ## Decisão
 
 Build multi-stage: compilação em `golang:1.27.3` com `CGO_ENABLED=0`, runtime em
-`gcr.io/distroless/static-debian12:nonroot`. Imagem final com 8,4 MB.
+`gcr.io/distroless/static-debian12:nonroot`. Imagem final com 8,4 MB na Fase 0, quando
+o binário só carregava a config, e 16,9 MB na Fase 1, com o servidor HTTP.
 
 ## Alternativas descartadas
 

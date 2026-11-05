@@ -13,6 +13,13 @@ existe; nenhum entra sem passar pela fase em andamento.
   é uma tag móvel, então dois builds do mesmo commit podem gerar imagens
   diferentes. Origem: Fase 0, ADR 0001.
 
+## API
+
+- **Tratar os campos da OpenAI que hoje são ignorados.** `stop`, `top_p` e `seed`, entre
+  outros, mudam a resposta, e o cliente não recebe nenhum aviso. Foi assim que o
+  `max_completion_tokens` passou despercebido até o teste com um SDK real. Cada campo
+  precisa de uma decisão: repassar ou recusar. Origem: Fase 1, teste com o SDK.
+
 ## CI
 
 - **`actionlint` no CI.** Hoje um erro no `ci.yml` só aparece quando o

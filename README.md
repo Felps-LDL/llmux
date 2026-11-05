@@ -6,9 +6,10 @@ Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
 provedores, com fallback, rate limiting, cache, contabilidade de custo e
 observabilidade.
 
-> **Estado:** Fase 0 de 5. Hoje o repositório tem a fundação (build, lint,
-> testes, imagem e CI). O que está descrito abaixo como arquitetura é o alvo,
-> construído fase a fase.
+> **Estado:** fechando a Fase 1 de 5. O gateway já atende
+> `POST /v1/chat/completions` sem streaming, com fallback, circuit breaker e cálculo
+> de custo, usando o Ollama como provedor. Redis, Postgres, filas e os demais
+> provedores da arquitetura abaixo são o alvo, construído fase a fase.
 
 ## O alvo
 
@@ -42,7 +43,7 @@ decide quais provedores atendem, em que ordem.
 | Fase | Escopo | Estado |
 |---|---|---|
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
-| 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | — |
+| 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | em fechamento |
 | 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | — |
 | 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
 | 4 | Fila de uso e worker, `/v1/batches` | — |
@@ -50,25 +51,71 @@ decide quais provedores atendem, em que ordem.
 
 ## Rodando
 
-Requer Go 1.27, golangci-lint 2.x e Docker.
+Requer Go 1.27, golangci-lint 2.x, Docker e o [Ollama](https://ollama.com/download).
+
+```
+ollama pull llama3.2
+cp config.example.json config.json
+make run
+```
+
+Em outro terminal:
+
+```
+curl http://localhost:8080/v1/chat/completions -d '{
+  "model": "fast",
+  "messages": [{"role": "user", "content": "Olá!"}]
+}'
+```
+
+Com um SDK da OpenAI, troque só a `base_url` para `http://localhost:8080/v1`. A
+resposta traz o provedor e o custo em picodólares nos cabeçalhos `X-Llmux-Provider` e
+`X-Llmux-Cost-Picodollars`.
+
+Outros comandos:
 
 ```
 make              # lint, test e build: o mesmo que o CI roda
-make run          # roda o gateway localmente
 make docker-build # gera a imagem llmux-gateway:dev
 ```
 
-Configuração por variável de ambiente:
+Para rodar a imagem, monte a config. No Linux, com o Ollama na própria máquina:
+
+```
+docker run --rm --network host \
+  -v "$PWD/config.json:/config.json:ro" -e LLMUX_CONFIG=/config.json \
+  llmux-gateway:dev
+```
+
+Variáveis de ambiente:
 
 | Variável | Default | Uso |
 |---|---|---|
-| `LLMUX_ADDR` | `:8080` | endereço do servidor (lido hoje; o servidor entra na Fase 1) |
+| `LLMUX_ADDR` | `:8080` | endereço do servidor |
+| `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
+
+O formato do arquivo está em [`config.example.json`](config.example.json). O gateway
+não sobe se uma rota não tiver preço ou provedor configurado.
+
+## Limitações atuais
+
+- **Sem autenticação:** qualquer um que alcance o gateway pode usá-lo. Entra na Fase 2.
+- **Sem streaming:** `"stream": true` é recusado com `400`. Entra na Fase 2.
+- **Só mensagens de texto:** `content` como lista de partes e o papel `tool` são
+  recusados, então os recursos de ferramentas dos SDKs não funcionam.
+- **Campos ignorados:** para os SDKs funcionarem, campos desconhecidos são aceitos e
+  ignorados. Isso inclui `stop`, `top_p` e `seed`, que mudam a resposta.
+- **O custo não é guardado:** ele sai só no cabeçalho da resposta. A contabilidade
+  entra com o Postgres e a fila de uso.
+- **Compatibilidade:** testada com `curl` e com o SDK oficial em Go.
 
 ## Decisões
 
 Cada decisão relevante tem um ADR em [`docs/decisions/`](docs/decisions/).
 
 - [0001 — Imagem de runtime distroless](docs/decisions/0001-imagem-distroless.md)
+- [0002 — Precificação pelo modelo da rota](docs/decisions/0002-precificacao-pelo-modelo-da-rota.md)
+- [0003 — Fallback e circuit breaker](docs/decisions/0003-fallback-e-circuit-breaker.md)
 
 ## Custo
 
