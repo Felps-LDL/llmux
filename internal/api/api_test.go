@@ -162,6 +162,7 @@ func TestChatCompletionsRecusaPedidoInvalido(t *testing.T) {
 		{name: "sem messages", body: `{"model": "fast", "messages": []}`, wantStatus: http.StatusBadRequest},
 		{name: "role inválido", body: `{"model": "fast", "messages": [{"role": "assistent", "content": "oi"}]}`, wantStatus: http.StatusBadRequest},
 		{name: "modelo desconhecido", body: `{"model": "nao-existe", "messages": [{"role": "user", "content": "oi"}]}`, wantStatus: http.StatusNotFound},
+		{name: "limite negativo", body: `{"model": "fast", "max_completion_tokens": -1, "messages": [{"role": "user", "content": "oi"}]}`, wantStatus: http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {
@@ -199,5 +200,36 @@ func TestChatCompletionsNaoRespondeClienteQueDesistiu(t *testing.T) {
 	}
 	if calls := a.Calls(); len(calls) != 0 {
 		t.Errorf("provedor foi chamado %d vezes, mas o cliente desistiu", len(calls))
+	}
+}
+
+func TestChatCompletionsRepassaLimiteDeTokens(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields string
+		want   int
+	}{
+		{name: "max_tokens", fields: `"max_tokens": 5`, want: 5},
+		{name: "max_completion_tokens", fields: `"max_completion_tokens": 7`, want: 7},
+		{name: "os dois", fields: `"max_tokens": 5, "max_completion_tokens": 7`, want: 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
+			body := `{"model": "fast", "messages": [{"role": "user", "content": "oi"}], ` + tt.fields + `}`
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+
+			newHandler(a).ServeHTTP(rec, req)
+
+			calls := a.Calls()
+			if len(calls) != 1 {
+				t.Fatalf("chamadas = %d, want 1", len(calls))
+			}
+			if calls[0].MaxTokens != tt.want {
+				t.Errorf("MaxTokens = %d, want %d", calls[0].MaxTokens, tt.want)
+			}
+		})
 	}
 }

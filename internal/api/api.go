@@ -52,7 +52,10 @@ type chatRequest struct {
 	// Ponteiro pelo motivo documentado em provider.ChatRequest.
 	Temperature *float64 `json:"temperature"`
 	MaxTokens   int      `json:"max_tokens"`
-	Stream      bool     `json:"stream"`
+	// Os SDKs atuais também oferecem este nome para o mesmo limite. Sem ele, o limite
+	// seria ignorado sem aviso, e o cliente pagaria por uma resposta inteira.
+	MaxCompletionTokens int  `json:"max_completion_tokens"`
+	Stream              bool `json:"stream"`
 }
 
 type chatChoice struct {
@@ -155,8 +158,12 @@ func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
 	if len(in.Messages) == 0 {
 		return provider.ChatRequest{}, errors.New("messages é obrigatório")
 	}
-	if in.MaxTokens < 0 {
-		return provider.ChatRequest{}, errors.New("max_tokens não pode ser negativo")
+	if in.MaxTokens < 0 || in.MaxCompletionTokens < 0 {
+		return provider.ChatRequest{}, errors.New("o limite de tokens não pode ser negativo")
+	}
+	maxTokens := in.MaxTokens
+	if in.MaxCompletionTokens > 0 {
+		maxTokens = in.MaxCompletionTokens
 	}
 
 	messages := make([]provider.Message, len(in.Messages))
@@ -175,7 +182,7 @@ func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
 	return provider.ChatRequest{
 		Messages:    messages,
 		Temperature: in.Temperature,
-		MaxTokens:   in.MaxTokens,
+		MaxTokens:   maxTokens,
 	}, nil
 }
 
