@@ -79,12 +79,12 @@ func (c *Client) Chat(ctx context.Context, req provider.ChatRequest) (*provider.
 		Options:  options{Temperature: req.Temperature, NumPredict: req.MaxTokens},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ollama: codificando pedido: %w", err)
+		return nil, fmt.Errorf("codificando pedido: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("ollama: criando pedido: %w", err)
+		return nil, fmt.Errorf("criando pedido: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
@@ -106,7 +106,7 @@ func (c *Client) Chat(ctx context.Context, req provider.ChatRequest) (*provider.
 	}
 	// Status 200 não garante sucesso: um corpo com "error" também é uma falha.
 	if out.Error != "" {
-		return nil, fmt.Errorf("ollama: %s: %w", out.Error, provider.ErrUnavailable)
+		return nil, fmt.Errorf("%s: %w", out.Error, provider.ErrUnavailable)
 	}
 
 	return &provider.ChatResponse{
@@ -125,16 +125,16 @@ func (c *Client) Chat(ctx context.Context, req provider.ChatRequest) (*provider.
 func classifyTransportError(err error) error {
 	// Fica sem classe: quem desistiu foi o cliente, não o provedor.
 	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("ollama: %w", err)
+		return err
 	}
 
 	// O timeout do transporte nem sempre aparece como context.DeadlineExceeded.
 	var netErr net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
-		return fmt.Errorf("ollama: %w: %w", provider.ErrTimeout, err)
+		return fmt.Errorf("%w: %w", provider.ErrTimeout, err)
 	}
 
-	return fmt.Errorf("ollama: %w: %w", provider.ErrUnavailable, err)
+	return fmt.Errorf("%w: %w", provider.ErrUnavailable, err)
 }
 
 func statusError(resp *http.Response) error {
@@ -152,13 +152,13 @@ func statusError(resp *http.Response) error {
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return fmt.Errorf("ollama: status %d: %s: %w", resp.StatusCode, detail, provider.ErrRateLimited)
+		return fmt.Errorf("status %d: %s: %w", resp.StatusCode, detail, provider.ErrRateLimited)
 	case resp.StatusCode >= http.StatusInternalServerError:
-		return fmt.Errorf("ollama: status %d: %s: %w", resp.StatusCode, detail, provider.ErrUnavailable)
+		return fmt.Errorf("status %d: %s: %w", resp.StatusCode, detail, provider.ErrUnavailable)
 	default:
 		// Sem classe: um 400 ou um 404 de modelo inexistente falharia igual em
 		// qualquer nova tentativa e não diz nada sobre a saúde do provedor.
-		return fmt.Errorf("ollama: status %d: %s", resp.StatusCode, detail)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, detail)
 	}
 }
 
