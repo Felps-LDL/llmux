@@ -6,7 +6,7 @@ Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
 provedores, com fallback, rate limiting, cache, contabilidade de custo e
 observabilidade.
 
-> **Estado:** fechando a Fase 1 de 5. O gateway já atende
+> **Estado:** Fase 1 de 5 concluída. O gateway já atende
 > `POST /v1/chat/completions` sem streaming, com fallback, circuit breaker e cálculo
 > de custo, usando o Ollama como provedor. Redis, Postgres, filas e os demais
 > provedores da arquitetura abaixo são o alvo, construído fase a fase.
@@ -43,7 +43,7 @@ decide quais provedores atendem, em que ordem.
 | Fase | Escopo | Estado |
 |---|---|---|
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
-| 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | em fechamento |
+| 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | concluída |
 | 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | — |
 | 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
 | 4 | Fila de uso e worker, `/v1/batches` | — |

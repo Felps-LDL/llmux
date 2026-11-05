@@ -18,11 +18,11 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **1** (em fechamento: faltam push, PR com CI, perguntas de entrevista e merge)
-Última coisa concluída: código da Fase 1 (router, breaker, custo, config, adaptador do
-Ollama, endpoint e servidor), ADRs 0002 e 0003. Provado de ponta a ponta com o Ollama
-real, no binário e no container, e com o SDK oficial em Go. O CI ainda não rodou nesse
-código, porque a branch `fase-1` não foi enviada.
+Fase: **2** (ainda não iniciada; próxima depois do merge do PR #2)
+Última coisa concluída: Fase 1 fechada no PR #2 (router, breaker, custo, config, adaptador
+do Ollama, endpoint e servidor, ADRs 0002 e 0003). Provada de ponta a ponta com o Ollama
+real, no binário e no container, e com o SDK oficial em Go. CI verde. Perguntas de
+entrevista respondidas depois de revisão.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
