@@ -4,3 +4,4 @@
 bin/
 coverage.out
 docs/
+config.json

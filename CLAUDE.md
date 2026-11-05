@@ -18,11 +18,11 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **1** (próxima: interface `Provider` e provedor falso)
-Última coisa concluída: Fase 0 fechada no PR #1 (esqueleto, teste mínimo,
-Makefile, golangci-lint v2, Dockerfile distroless + ADR 0001, CI, README,
-backlog). CI validado verde → vermelho → verde, `main` protegida por ruleset
-com `lint`, `test` e `build` obrigatórios.
+Fase: **2** (ainda não iniciada; próxima depois do merge do PR #2)
+Última coisa concluída: Fase 1 fechada no PR #2 (router, breaker, custo, config, adaptador
+do Ollama, endpoint e servidor, ADRs 0002 e 0003). Provada de ponta a ponta com o Ollama
+real, no binário e no container, e com o SDK oficial em Go. CI verde. Perguntas de
+entrevista respondidas depois de revisão.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
@@ -82,17 +82,20 @@ Interface central, tudo é escrito contra ela:
 type Provider interface {
     Name() string
     Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
-    ChatStream(ctx context.Context, req ChatRequest) (StreamReader, error)
 }
 ```
+
+`ChatStream(ctx, req) (StreamReader, error)` entra na interface na Fase 2, junto com
+o streaming. Antes disso, toda implementação teria um stub devolvendo "não
+implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum faz.
 
 ## Fases
 
 | Fase | Escopo |
 |---|---|
 | **0** | Repo, Makefile, golangci-lint, CI verde, Dockerfile, README com o alvo |
-| **1** | Interface `Provider`, provedor falso, router com fallback e breaker, contagem de token e custo, endpoint sem streaming, cobertura alta |
-| **2** | Streaming SSE, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
+| **1** | Interface `Provider`, provedor falso, router com fallback e breaker, contagem de token e custo, carga de config, adaptador do Ollama, endpoint sem streaming, cobertura alta |
+| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
 | **3** | slog com request_id, métricas Prometheus, tracing OTel, dashboard Grafana, prints no README |
 | **4** | Fila de uso e worker, `/v1/batches`, métrica de profundidade de fila |
 | **5** | Kubernetes: deployments separados, HPA pela fila, kind documentado |
