@@ -95,7 +95,7 @@ implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum 
 |---|---|
 | **0** | Repo, Makefile, golangci-lint, CI verde, Dockerfile, README com o alvo |
 | **1** | Interface `Provider`, provedor falso, router com fallback e breaker, contagem de token e custo, carga de config, adaptador do Ollama, endpoint sem streaming, cobertura alta |
-| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
+| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
 | **3** | slog com request_id, métricas Prometheus, tracing OTel, dashboard Grafana, prints no README |
 | **4** | Fila de uso e worker, `/v1/batches`, métrica de profundidade de fila |
 | **5** | Kubernetes: deployments separados, HPA pela fila, kind documentado |

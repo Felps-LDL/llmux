@@ -43,7 +43,7 @@ decide quais provedores atendem, em que ordem.
 |---|---|---|
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
 | 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | — |
-| 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, rate limit e cache no Redis, Postgres, testcontainers | — |
+| 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | — |
 | 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
 | 4 | Fila de uso e worker, `/v1/batches` | — |
 | 5 | Kubernetes com HPA pela fila | — |
