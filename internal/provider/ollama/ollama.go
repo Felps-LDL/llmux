@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 
 	"github.com/Felps-LDL/llmux/internal/provider"
@@ -80,7 +79,7 @@ func (c *Client) Chat(ctx context.Context, req provider.ChatRequest) (*provider.
 
 	var out chatResponse
 	if err := json.NewDecoder(body).Decode(&out); err != nil {
-		return nil, classifyTransportError(err)
+		return nil, provider.ClassifyTransportError(err)
 	}
 	// Status 200 não garante sucesso: um corpo com "error" também é uma falha.
 	if out.Error != "" {
@@ -135,7 +134,7 @@ func (c *Client) send(ctx context.Context, req provider.ChatRequest, stream bool
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, classifyTransportError(err)
+		return nil, provider.ClassifyTransportError(err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -163,7 +162,7 @@ func (r *streamReader) Recv() (provider.StreamChunk, error) {
 		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
 		}
-		return provider.StreamChunk{}, classifyTransportError(err)
+		return provider.StreamChunk{}, provider.ClassifyTransportError(err)
 	}
 	if line.Error != "" {
 		return provider.StreamChunk{}, fmt.Errorf("%s: %w", line.Error, provider.ErrUnavailable)
@@ -189,23 +188,6 @@ func (r *streamReader) Close() error {
 	return r.body.Close()
 }
 
-// classifyTransportError trata falhas sem status HTTP: de conexão, de prazo ou de
-// uma resposta que chegou cortada ou malformada.
-func classifyTransportError(err error) error {
-	// Fica sem classe: quem desistiu foi o cliente, não o provedor.
-	if errors.Is(err, context.Canceled) {
-		return err
-	}
-
-	// O timeout do transporte nem sempre aparece como context.DeadlineExceeded.
-	var netErr net.Error
-	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
-		return fmt.Errorf("%w: %w", provider.ErrTimeout, err)
-	}
-
-	return fmt.Errorf("%w: %w", provider.ErrUnavailable, err)
-}
-
 func statusError(resp *http.Response) error {
 	detail := "corpo ilegível"
 	if data, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody)); err == nil {
@@ -219,16 +201,7 @@ func statusError(resp *http.Response) error {
 		}
 	}
 
-	switch {
-	case resp.StatusCode == http.StatusTooManyRequests:
-		return fmt.Errorf("status %d: %s: %w", resp.StatusCode, detail, provider.ErrRateLimited)
-	case resp.StatusCode >= http.StatusInternalServerError:
-		return fmt.Errorf("status %d: %s: %w", resp.StatusCode, detail, provider.ErrUnavailable)
-	default:
-		// Sem classe: um 400 ou um 404 de modelo inexistente falharia igual em
-		// qualquer nova tentativa e não diz nada sobre a saúde do provedor.
-		return fmt.Errorf("status %d: %s", resp.StatusCode, detail)
-	}
+	return provider.StatusError(resp.StatusCode, detail)
 }
 
 // finishReason traduz para o vocabulário da OpenAI, que é o da nossa API. A
