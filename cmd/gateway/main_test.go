@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Felps-LDL/llmux/internal/config"
 )
 
 // fakeEnv devolve um getenv que lê de um map, para o teste controlar o
@@ -66,5 +68,48 @@ func TestRun(t *testing.T) {
 
 	if !strings.Contains(out.String(), "addr=127.0.0.1:") {
 		t.Errorf("saída = %q, deveria conter %q", out.String(), "addr=127.0.0.1:")
+	}
+}
+
+// Verifica a regra da chave: com a OpenAI na config, o gateway só sobe se a chave
+// estiver no ambiente. O caso sem a OpenAI importa tanto quanto: quem usa só o
+// Ollama não pode ser obrigado a definir uma chave que nunca vai usar.
+func TestBuildRouterExigeChaveSoDeQuemUsa(t *testing.T) {
+	tests := []struct {
+		name      string
+		providers string
+		env       map[string]string
+		wantErr   bool
+		// O erro precisa dizer o que falta; senão o operador procura no código.
+		errMentions string
+	}{
+		{name: "openai sem chave", providers: `"openai": {"base_url": "http://x/v1"}`, wantErr: true, errMentions: "OPENAI_API_KEY"},
+		{name: "openai com chave", providers: `"openai": {"base_url": "http://x/v1"}`, env: map[string]string{"OPENAI_API_KEY": "k"}},
+		{name: "só ollama, sem chave", providers: `"ollama": {"base_url": "http://x"}`},
+		{name: "provedor desconhecido", providers: `"azure": {"base_url": "http://x"}`, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := strings.Split(tt.providers, `"`)[1]
+			cfg, err := config.Load(strings.NewReader(`{
+				"attempt_timeout": "30s",
+				"breaker": {"threshold": 5, "cooldown": "1m"},
+				"providers": {` + tt.providers + `},
+				"models": {"fast": [{"provider": "` + name + `", "model": "m"}]},
+				"prices": [{"provider": "` + name + `", "model": "m", "input_per_million": 0, "output_per_million": 0}]
+			}`))
+			if err != nil {
+				t.Fatalf("config: %v", err)
+			}
+
+			_, err = buildRouter(cfg, fakeEnv(tt.env))
+			if gotErr := err != nil; gotErr != tt.wantErr {
+				t.Fatalf("erro = %v, want erro: %v", err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), tt.errMentions) {
+				t.Errorf("erro = %q, deveria citar %q", err, tt.errMentions)
+			}
+		})
 	}
 }

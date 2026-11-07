@@ -93,6 +93,7 @@ Variáveis de ambiente:
 |---|---|---|
 | `LLMUX_ADDR` | `:8080` | endereço do servidor |
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
+| `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 
 O formato do arquivo está em [`config.example.json`](config.example.json). O gateway
 não sobe se uma rota não tiver preço ou provedor configurado.
@@ -100,12 +101,15 @@ não sobe se uma rota não tiver preço ou provedor configurado.
 ## Limitações atuais
 
 - **Sem autenticação:** qualquer um que alcance o gateway pode usá-lo. Entra na Fase 2.
-- **Sem streaming:** `"stream": true` é recusado com `400`. Entra na Fase 2.
+- **Stream interrompido não tem custo:** o uso só chega no fim do stream. No streaming,
+  o custo vai como trailer HTTP, que muitos clientes ignoram.
+- **OpenAI imitada pelo Ollama:** o adaptador da OpenAI funciona contra o `/v1` do Ollama,
+  mas o Ollama ignora `max_completion_tokens`, então o limite de tokens não vale ali.
 - **Só mensagens de texto:** `content` como lista de partes e o papel `tool` são
   recusados, então os recursos de ferramentas dos SDKs não funcionam.
 - **Campos ignorados:** para os SDKs funcionarem, campos desconhecidos são aceitos e
   ignorados. Isso inclui `stop`, `top_p` e `seed`, que mudam a resposta.
-- **O custo não é guardado:** ele sai só no cabeçalho da resposta. A contabilidade
+- **O custo não é guardado:** ele sai só no cabeçalho (ou trailer) da resposta. A contabilidade
   entra com o Postgres e a fila de uso.
 - **Compatibilidade:** testada com `curl` e com o SDK oficial em Go.
 

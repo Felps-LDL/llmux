@@ -16,6 +16,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/config"
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/provider/ollama"
+	"github.com/Felps-LDL/llmux/internal/provider/openai"
 	"github.com/Felps-LDL/llmux/internal/router"
 )
 
@@ -29,6 +30,10 @@ const (
 	readHeaderTimeout = 5 * time.Second
 	// Tempo para os pedidos em andamento terminarem depois de um sinal de encerramento.
 	shutdownTimeout = 30 * time.Second
+
+	// O mesmo nome que os SDKs oficiais usam: quem já tem a chave no ambiente não
+	// precisa mudar nada. A chave nunca vai na config, que tem um exemplo versionado.
+	openAIKeyEnv = "OPENAI_API_KEY"
 )
 
 type settings struct {
@@ -50,13 +55,20 @@ func loadSettings(getenv func(string) string) settings {
 }
 
 // buildRouter cria um cliente por provedor e monta as rotas da config. Falha para
-// nome desconhecido, porque um erro de digitação na config precisa aparecer na subida.
-func buildRouter(cfg *config.Config) (*router.Router, error) {
+// nome desconhecido ou chave ausente, porque um erro de configuração precisa
+// aparecer na subida, e não como um 502 em cada pedido.
+func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router, error) {
 	providers := make(map[string]provider.Provider, len(cfg.Providers))
 	for name, p := range cfg.Providers {
 		switch name {
 		case "ollama":
 			providers[name] = ollama.New(p.BaseURL, &http.Client{})
+		case "openai":
+			key := getenv(openAIKeyEnv)
+			if key == "" {
+				return nil, fmt.Errorf("provedor %q precisa da variável %s", name, openAIKeyEnv)
+			}
+			providers[name] = openai.New(p.BaseURL, key, &http.Client{})
 		default:
 			return nil, fmt.Errorf("provedor %q não é suportado", name)
 		}
@@ -120,7 +132,7 @@ func run(ctx context.Context, getenv func(string) string, stdout io.Writer) erro
 	if err != nil {
 		return err
 	}
-	r, err := buildRouter(cfg)
+	r, err := buildRouter(cfg, getenv)
 	if err != nil {
 		return err
 	}
