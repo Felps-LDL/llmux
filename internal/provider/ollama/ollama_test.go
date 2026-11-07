@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -187,6 +188,137 @@ func TestChatNaoClassificaCancelamento(t *testing.T) {
 		t.Errorf("esperava context.Canceled, mas deu: %v", err)
 	}
 
+	for _, class := range []error{provider.ErrRateLimited, provider.ErrUnavailable, provider.ErrTimeout} {
+		if errors.Is(err, class) {
+			t.Errorf("não esperava que err fosse %v, mas é: %v", class, err)
+		}
+	}
+}
+
+// Verifica a tradução do NDJSON para pedaços, sobre HTTP de verdade: o pedido sai
+// com stream true, o texto chega em ordem, e só a linha com done traz o uso e
+// encerra o stream. As linhas seguem o formato documentado do Ollama.
+func TestChatStreamTraduzLinhasEmPedacos(t *testing.T) {
+	var gotStream *bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream *bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("corpo do pedido: %v", err)
+		}
+		gotStream = req.Stream
+		_, _ = w.Write([]byte(
+			`{"model":"llama3.2","message":{"role":"assistant","content":"o"},"done":false}` + "\n" +
+				`{"model":"llama3.2","message":{"role":"assistant","content":"lá"},"done":false}` + "\n" +
+				`{"model":"llama3.2","message":{"role":"assistant","content":""},"done":true,` +
+				`"done_reason":"length","prompt_eval_count":10,"eval_count":2}` + "\n"))
+	}))
+	defer srv.Close()
+
+	stream, err := ollama.New(srv.URL, srv.Client()).ChatStream(t.Context(), provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("ChatStream: erro inesperado: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	var content string
+	var last provider.StreamChunk
+	for {
+		chunk, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: erro inesperado: %v", err)
+		}
+		content += chunk.Content
+		last = chunk
+	}
+
+	if gotStream == nil || !*gotStream {
+		t.Errorf("stream = %v, want true", gotStream)
+	}
+	if content != "olá" {
+		t.Errorf("conteúdo = %q, want %q", content, "olá")
+	}
+	if last.FinishReason != "length" {
+		t.Errorf("FinishReason = %q, want %q", last.FinishReason, "length")
+	}
+	if last.Usage == nil || last.Usage.PromptTokens != 10 || last.Usage.CompletionTokens != 2 {
+		t.Errorf("Usage = %+v, want 10 de entrada e 2 de saída", last.Usage)
+	}
+}
+
+// Verifica o caso mais traiçoeiro do streaming: a conexão termina sem a linha
+// done. Para o decoder isso é um io.EOF comum; se ele passasse adiante, o cliente
+// receberia meia resposta como se fosse completa, e sem uso para cobrar.
+func TestChatStreamTrataCorteAntesDoDoneComoIndisponivel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"o"},"done":false}` + "\n"))
+	}))
+	defer srv.Close()
+
+	stream, err := ollama.New(srv.URL, srv.Client()).ChatStream(t.Context(), provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("ChatStream: erro inesperado: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("primeiro Recv: erro inesperado: %v", err)
+	}
+	_, err = stream.Recv()
+	if errors.Is(err, io.EOF) || !errors.Is(err, provider.ErrUnavailable) {
+		t.Errorf("Recv após o corte: erro = %v, want ErrUnavailable e não io.EOF", err)
+	}
+}
+
+func TestChatStreamTrataLinhaDeErroComoIndisponivel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":"falha no modelo"}` + "\n"))
+	}))
+	defer srv.Close()
+
+	stream, err := ollama.New(srv.URL, srv.Client()).ChatStream(t.Context(), provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("ChatStream: erro inesperado: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	if _, err := stream.Recv(); !errors.Is(err, provider.ErrUnavailable) {
+		t.Errorf("Recv: erro = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestChatStreamNaoClassificaCancelamentoNoMeio(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"o"},"done":false}` + "\n"))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	stream, err := ollama.New(srv.URL, srv.Client()).ChatStream(ctx, provider.ChatRequest{})
+	if err != nil {
+		t.Fatalf("ChatStream: erro inesperado: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("primeiro Recv: erro inesperado: %v", err)
+	}
+	cancel()
+
+	_, err = stream.Recv()
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Recv após cancelamento: erro = %v, want context.Canceled", err)
+	}
 	for _, class := range []error{provider.ErrRateLimited, provider.ErrUnavailable, provider.ErrTimeout} {
 		if errors.Is(err, class) {
 			t.Errorf("não esperava que err fosse %v, mas é: %v", class, err)
