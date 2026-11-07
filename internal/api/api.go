@@ -23,6 +23,8 @@ import (
 // porque um prompt com contexto longo é um pedido legítimo.
 const maxBodyBytes = 10 << 20
 
+const costHeader = "X-Llmux-Cost-Picodollars"
+
 // Server atende a API HTTP do gateway.
 type Server struct {
 	router *router.Router
@@ -54,8 +56,15 @@ type chatRequest struct {
 	MaxTokens   int      `json:"max_tokens"`
 	// Os SDKs atuais também oferecem este nome para o mesmo limite. Sem ele, o limite
 	// seria ignorado sem aviso, e o cliente pagaria por uma resposta inteira.
-	MaxCompletionTokens int  `json:"max_completion_tokens"`
-	Stream              bool `json:"stream"`
+	MaxCompletionTokens int           `json:"max_completion_tokens"`
+	Stream              bool          `json:"stream"`
+	StreamOptions       streamOptions `json:"stream_options"`
+}
+
+type streamOptions struct {
+	// Na API da OpenAI, o uso só vai no stream se o cliente pedir; um pedaço extra
+	// sem choices poderia quebrar clientes que não o esperam.
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatChoice struct {
@@ -110,20 +119,18 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if in.Stream {
+		s.streamCompletions(w, r, in, req)
+		return
+	}
+
 	res, err := s.router.Chat(r.Context(), in.Model, req)
 	if err != nil {
 		writeRouterError(r.Context(), w, in.Model, err)
 		return
 	}
 
-	// O provedor já respondeu e cobrou: um erro de preço não pode custar a resposta
-	// ao cliente. A carga da config impede que isso aconteça em produção.
-	cost, err := s.prices.Cost(res.Provider, res.Model, res.Response.Usage)
-	if err != nil {
-		log.Printf("api: calculando custo: %v", err)
-	} else {
-		w.Header().Set("X-Llmux-Cost-Picodollars", strconv.FormatInt(int64(cost), 10))
-	}
+	s.setCost(w, res.Provider, res.Model, res.Response.Usage)
 	w.Header().Set("X-Llmux-Provider", res.Provider)
 
 	u := res.Response.Usage
@@ -146,12 +153,20 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
-	// Responder sem streaming a quem pediu streaming quebraria o SDK sem um erro
-	// claro. Streaming entra na Fase 2.
-	if in.Stream {
-		return provider.ChatRequest{}, errors.New("stream ainda não é suportado")
+// setCost põe o custo no cabeçalho de custo; no streaming, ele vai como trailer,
+// declarado antes do corpo. O provedor já respondeu e cobrou: um erro de preço não
+// pode custar a resposta ao cliente. A carga da config impede que isso aconteça em
+// produção.
+func (s *Server) setCost(w http.ResponseWriter, providerName, model string, u provider.Usage) {
+	cost, err := s.prices.Cost(providerName, model, u)
+	if err != nil {
+		log.Printf("api: calculando custo: %v", err)
+		return
 	}
+	w.Header().Set(costHeader, strconv.FormatInt(int64(cost), 10))
+}
+
+func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
 	if in.Model == "" {
 		return provider.ChatRequest{}, errors.New("model é obrigatório")
 	}

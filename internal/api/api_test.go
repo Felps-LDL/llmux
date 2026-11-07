@@ -157,7 +157,6 @@ func TestChatCompletionsRecusaPedidoInvalido(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "JSON inválido", body: `{"model":`, wantStatus: http.StatusBadRequest},
-		{name: "stream", body: `{"model": "fast", "stream": true, "messages": [{"role": "user", "content": "oi"}]}`, wantStatus: http.StatusBadRequest},
 		{name: "sem model", body: `{"messages": [{"role": "user", "content": "oi"}]}`, wantStatus: http.StatusBadRequest},
 		{name: "sem messages", body: `{"model": "fast", "messages": []}`, wantStatus: http.StatusBadRequest},
 		{name: "role inválido", body: `{"model": "fast", "messages": [{"role": "assistent", "content": "oi"}]}`, wantStatus: http.StatusBadRequest},
