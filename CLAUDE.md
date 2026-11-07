@@ -18,11 +18,11 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **2** (ainda não iniciada; próxima depois do merge do PR #2)
-Última coisa concluída: Fase 1 fechada no PR #2 (router, breaker, custo, config, adaptador
-do Ollama, endpoint e servidor, ADRs 0002 e 0003). Provada de ponta a ponta com o Ollama
-real, no binário e no container, e com o SDK oficial em Go. CI verde. Perguntas de
-entrevista respondidas depois de revisão.
+Fase: **2** (em andamento, branch `fase-2`; a seguir, adaptadores da OpenAI e da Anthropic)
+Última coisa concluída: componente 1, streaming SSE (`ChatStream` no falso, no Ollama, no
+router com fallback até o primeiro pedaço, e na API com custo em trailer). Provado com o
+Ollama real e com o SDK oficial em Go. A pedido do Felipe, Claude escreve o código; ele
+revisa e responde perguntas de cenário, que ficaram pendentes para o fim da fase.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
@@ -82,12 +82,13 @@ Interface central, tudo é escrito contra ela:
 type Provider interface {
     Name() string
     Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+    ChatStream(ctx context.Context, req ChatRequest) (StreamReader, error)
 }
 ```
 
-`ChatStream(ctx, req) (StreamReader, error)` entra na interface na Fase 2, junto com
-o streaming. Antes disso, toda implementação teria um stub devolvendo "não
-implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum faz.
+`ChatStream` só entrou na Fase 2, junto com o streaming. Antes disso, toda
+implementação teria um stub devolvendo "não implementado", e o tipo afirmaria que
+todo provedor faz streaming quando nenhum faz.
 
 ## Fases
 
