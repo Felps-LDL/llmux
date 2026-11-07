@@ -7,6 +7,10 @@ import "context"
 type Provider interface {
 	Name() string
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+	// ChatStream devolve erro só para falhas antes do primeiro pedaço; as do meio
+	// do stream aparecem em StreamReader.Recv. Quem recebe o stream precisa
+	// fechá-lo.
+	ChatStream(ctx context.Context, req ChatRequest) (StreamReader, error)
 }
 
 // Role identifica o autor de uma Message.

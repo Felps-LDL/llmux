@@ -66,9 +66,26 @@ func New(routes map[string][]Route, attemptTimeout time.Duration, cfg BreakerCon
 // Chat atende req pelo modelo lógico model, tentando as rotas em ordem. O campo
 // req.Model é ignorado: cada rota define o nome físico.
 func (r *Router) Chat(ctx context.Context, model string, req provider.ChatRequest) (*Result, error) {
+	var res *Result
+	err := r.fallback(ctx, model, func(route Route, br *breaker) error {
+		req.Model = route.Model
+		resp, err := r.attempt(ctx, route, req)
+		record(ctx, br, err)
+		if err == nil {
+			res = &Result{Provider: route.Provider.Name(), Model: route.Model, Response: resp}
+		}
+		return err
+	})
+	return res, err
+}
+
+// fallback tenta as rotas de model em ordem até try ter sucesso. try recebe a rota
+// e o breaker dela e é quem informa o resultado ao breaker, porque no streaming o
+// veredito só sai no fim do stream, depois de fallback já ter retornado.
+func (r *Router) fallback(ctx context.Context, model string, try func(Route, *breaker) error) error {
 	routes := r.routes[model]
 	if len(routes) == 0 {
-		return nil, fmt.Errorf("%w: %q", ErrUnknownModel, model)
+		return fmt.Errorf("%w: %q", ErrUnknownModel, model)
 	}
 
 	var failures []error
@@ -76,7 +93,7 @@ func (r *Router) Chat(ctx context.Context, model string, req provider.ChatReques
 		// Com o cliente desconectado ou o prazo dele esgotado, a próxima tentativa
 		// falharia na hora ou pagaria por uma resposta que ninguém vai ler.
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("router: modelo %q: %w", model, err)
+			return fmt.Errorf("router: modelo %q: %w", model, err)
 		}
 
 		br := r.breakers[route.Provider.Name()]
@@ -85,21 +102,19 @@ func (r *Router) Chat(ctx context.Context, model string, req provider.ChatReques
 			continue
 		}
 
-		req.Model = route.Model
-		resp, err := r.attempt(ctx, route, req)
-		record(ctx, br, err)
+		err := try(route, br)
 		if err == nil {
-			return &Result{Provider: route.Provider.Name(), Model: route.Model, Response: resp}, nil
+			return nil
 		}
 
 		err = fmt.Errorf("%s: %w", route.Provider.Name(), err)
 		if !shouldFallback(err) {
-			return nil, fmt.Errorf("router: modelo %q: %w", model, err)
+			return fmt.Errorf("router: modelo %q: %w", model, err)
 		}
 		failures = append(failures, err)
 	}
 
-	return nil, fmt.Errorf("router: modelo %q: todos os provedores falharam: %w", model, errors.Join(failures...))
+	return fmt.Errorf("router: modelo %q: todos os provedores falharam: %w", model, errors.Join(failures...))
 }
 
 // attempt existe para o defer liberar o timer a cada tentativa; dentro do loop de
