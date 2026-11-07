@@ -19,6 +19,10 @@ existe; nenhum entra sem passar pela fase em andamento.
   outros, mudam a resposta, e o cliente não recebe nenhum aviso. Foi assim que o
   `max_completion_tokens` passou despercebido até o teste com um SDK real. Cada campo
   precisa de uma decisão: repassar ou recusar. Origem: Fase 1, teste com o SDK.
+- **Cobrar streams interrompidos.** O uso só chega no último pedaço; se o stream cai
+  antes, o gateway não sabe quanto o provedor cobrou e não registra custo. Opções: estimar
+  pelos pedaços entregues ou contar os tokens no gateway. Importa na Fase 4, quando o custo
+  vira registro por chave de API. Origem: Fase 2, streaming.
 
 ## CI
 
