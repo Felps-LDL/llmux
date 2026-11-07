@@ -71,9 +71,10 @@ func TestRun(t *testing.T) {
 	}
 }
 
-// Verifica a regra da chave: com a OpenAI na config, o gateway só sobe se a chave
-// estiver no ambiente. O caso sem a OpenAI importa tanto quanto: quem usa só o
-// Ollama não pode ser obrigado a definir uma chave que nunca vai usar.
+// Verifica a regra da chave: com um provedor pago na config, o gateway só sobe se
+// a chave dele estiver no ambiente. O caso só com o Ollama importa tanto quanto:
+// ninguém pode ser obrigado a definir uma chave que nunca vai usar. O caso da
+// chave trocada prova que cada provedor lê a própria variável.
 func TestBuildRouterExigeChaveSoDeQuemUsa(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -85,6 +86,9 @@ func TestBuildRouterExigeChaveSoDeQuemUsa(t *testing.T) {
 	}{
 		{name: "openai sem chave", providers: `"openai": {"base_url": "http://x/v1"}`, wantErr: true, errMentions: "OPENAI_API_KEY"},
 		{name: "openai com chave", providers: `"openai": {"base_url": "http://x/v1"}`, env: map[string]string{"OPENAI_API_KEY": "k"}},
+		{name: "anthropic sem chave", providers: `"anthropic": {"base_url": "http://x"}`, wantErr: true, errMentions: "ANTHROPIC_API_KEY"},
+		{name: "anthropic com chave", providers: `"anthropic": {"base_url": "http://x"}`, env: map[string]string{"ANTHROPIC_API_KEY": "k"}},
+		{name: "anthropic com a chave da openai", providers: `"anthropic": {"base_url": "http://x"}`, env: map[string]string{"OPENAI_API_KEY": "k"}, wantErr: true, errMentions: "ANTHROPIC_API_KEY"},
 		{name: "só ollama, sem chave", providers: `"ollama": {"base_url": "http://x"}`},
 		{name: "provedor desconhecido", providers: `"azure": {"base_url": "http://x"}`, wantErr: true},
 	}

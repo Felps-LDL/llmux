@@ -15,6 +15,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/api"
 	"github.com/Felps-LDL/llmux/internal/config"
 	"github.com/Felps-LDL/llmux/internal/provider"
+	"github.com/Felps-LDL/llmux/internal/provider/anthropic"
 	"github.com/Felps-LDL/llmux/internal/provider/ollama"
 	"github.com/Felps-LDL/llmux/internal/provider/openai"
 	"github.com/Felps-LDL/llmux/internal/router"
@@ -31,9 +32,10 @@ const (
 	// Tempo para os pedidos em andamento terminarem depois de um sinal de encerramento.
 	shutdownTimeout = 30 * time.Second
 
-	// O mesmo nome que os SDKs oficiais usam: quem já tem a chave no ambiente não
+	// Os mesmos nomes que os SDKs oficiais usam: quem já tem a chave no ambiente não
 	// precisa mudar nada. A chave nunca vai na config, que tem um exemplo versionado.
-	openAIKeyEnv = "OPENAI_API_KEY"
+	openAIKeyEnv    = "OPENAI_API_KEY"
+	anthropicKeyEnv = "ANTHROPIC_API_KEY"
 )
 
 type settings struct {
@@ -64,11 +66,17 @@ func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router
 		case "ollama":
 			providers[name] = ollama.New(p.BaseURL, &http.Client{})
 		case "openai":
-			key := getenv(openAIKeyEnv)
-			if key == "" {
-				return nil, fmt.Errorf("provedor %q precisa da variável %s", name, openAIKeyEnv)
+			key, err := apiKey(getenv, name, openAIKeyEnv)
+			if err != nil {
+				return nil, err
 			}
 			providers[name] = openai.New(p.BaseURL, key, &http.Client{})
+		case "anthropic":
+			key, err := apiKey(getenv, name, anthropicKeyEnv)
+			if err != nil {
+				return nil, err
+			}
+			providers[name] = anthropic.New(p.BaseURL, key, &http.Client{})
 		default:
 			return nil, fmt.Errorf("provedor %q não é suportado", name)
 		}
@@ -85,6 +93,16 @@ func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router
 		Threshold: cfg.BreakerThreshold,
 		Cooldown:  cfg.BreakerCooldown,
 	}), nil
+}
+
+// apiKey lê a chave de um provedor pago. Sem ela, o gateway não sobe: senão cada
+// pedido viraria um 502 por causa de um 401 visível só no log.
+func apiKey(getenv func(string) string, providerName, env string) (string, error) {
+	key := getenv(env)
+	if key == "" {
+		return "", fmt.Errorf("provedor %q precisa da variável %s", providerName, env)
+	}
+	return key, nil
 }
 
 func loadConfig(path string) (*config.Config, error) {

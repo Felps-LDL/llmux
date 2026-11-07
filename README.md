@@ -94,6 +94,7 @@ Variáveis de ambiente:
 | `LLMUX_ADDR` | `:8080` | endereço do servidor |
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
+| `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 
 O formato do arquivo está em [`config.example.json`](config.example.json). O gateway
 não sobe se uma rota não tiver preço ou provedor configurado.
@@ -105,6 +106,9 @@ não sobe se uma rota não tiver preço ou provedor configurado.
   o custo vai como trailer HTTP, que muitos clientes ignoram.
 - **OpenAI imitada pelo Ollama:** o adaptador da OpenAI funciona contra o `/v1` do Ollama,
   mas o Ollama ignora `max_completion_tokens`, então o limite de tokens não vale ali.
+- **Anthropic sem `temperature`:** a versão `2026-10-21` da API recusa o campo com `400`,
+  então a temperatura do cliente não é repassada. Sem `max_tokens`, o gateway manda 16000,
+  porque a Anthropic exige o campo.
 - **Só mensagens de texto:** `content` como lista de partes e o papel `tool` são
   recusados, então os recursos de ferramentas dos SDKs não funcionam.
 - **Campos ignorados:** para os SDKs funcionarem, campos desconhecidos são aceitos e
