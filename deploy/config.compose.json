@@ -1,0 +1,13 @@
+{
+  "attempt_timeout": "60s",
+  "breaker": {"threshold": 5, "cooldown": "30s"},
+  "providers": {
+    "ollama": {"base_url": "http://ollama:11434"}
+  },
+  "models": {
+    "fast": [{"provider": "ollama", "model": "llama3.2"}]
+  },
+  "prices": [
+    {"provider": "ollama", "model": "llama3.2", "input_per_million": 0, "output_per_million": 0}
+  ]
+}

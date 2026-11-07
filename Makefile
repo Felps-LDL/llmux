@@ -1,7 +1,7 @@
 IMAGE ?= llmux-gateway
 TAG   ?= dev
 
-.PHONY: all build test lint run docker-build clean
+.PHONY: all build test lint run docker-build up down clean
 
 # all é o primeiro alvo para que `make` sem argumento rode o mesmo que o CI.
 all: lint test build
@@ -20,6 +20,14 @@ run:
 
 docker-build:
 	docker build -t $(IMAGE):$(TAG) .
+
+# --build porque o gateway é código deste repositório: sem ele, o compose usaria
+# a imagem da última vez e ignoraria as mudanças.
+up:
+	docker compose -f deploy/docker-compose.yml up --build -d
+
+down:
+	docker compose -f deploy/docker-compose.yml down
 
 clean:
 	rm -rf bin/ coverage.out

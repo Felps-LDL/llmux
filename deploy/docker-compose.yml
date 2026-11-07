@@ -1,0 +1,80 @@
+# Ambiente local completo: `make up` sobe tudo, `make down` derruba.
+# As portas publicadas ficam presas em 127.0.0.1 para nada fora desta máquina
+# alcançar o banco ou o gateway sem autenticação.
+name: llmux
+
+services:
+  gateway:
+    build:
+      context: ..
+    image: llmux-gateway:dev
+    environment:
+      LLMUX_CONFIG: /config.json
+    volumes:
+      - ./config.compose.json:/config.json:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      # Sem esperar o modelo, os primeiros pedidos falhariam com 404 do Ollama.
+      ollama-pull:
+        condition: service_completed_successfully
+
+  ollama:
+    image: ollama/ollama:0.40.14
+    volumes:
+      - ollama-models:/root/.ollama
+    # Sem ports: só o gateway fala com ele, e a 11434 do host pode estar em uso
+    # por um Ollama instalado na máquina.
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Baixa o modelo e termina. Roda a cada `up`, mas com o volume já cheio só
+  # confere o que existe.
+  ollama-pull:
+    image: ollama/ollama:0.40.14
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", "llama3.2"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: llmux
+      POSTGRES_DB: llmux
+      # Padrão só para desenvolvimento; a porta presa em 127.0.0.1 é o que o torna
+      # aceitável.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llmux}
+    volumes:
+      # A partir do Postgres 18, a imagem guarda os dados num subdiretório por
+      # versão e espera o volume aqui, e não em /var/lib/postgresql/data.
+      - postgres-data:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      # Processo de pé não basta: o banco só aceita conexões depois de inicializar.
+      test: ["CMD", "pg_isready", "-U", "llmux", "-d", "llmux"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    # Sem volume: contadores de rate limit e cache se reconstroem sozinhos, e
+    # perdê-los num restart custa no máximo algumas respostas recalculadas.
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ollama-models:
+  postgres-data:

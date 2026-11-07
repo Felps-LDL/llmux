@@ -51,7 +51,20 @@ decide quais provedores atendem, em que ordem.
 
 ## Rodando
 
-Requer Go 1.27, golangci-lint 2.x, Docker e o [Ollama](https://ollama.com/download).
+O caminho mais curto precisa só do Docker:
+
+```
+make up    # gateway, Ollama com llama3.2, Postgres e Redis
+make down  # derruba; os dados do Postgres e o modelo ficam nos volumes
+```
+
+Na primeira vez, `make up` baixa a imagem do Ollama e o modelo (alguns GB) e só
+termina depois que o modelo estiver pronto. As portas publicadas (gateway em 8080,
+Postgres em 5432, Redis em 6379) ficam presas em `127.0.0.1`. A config usada é
+[`deploy/config.compose.json`](deploy/config.compose.json).
+
+Para desenvolver sem containers, com Go 1.27, golangci-lint 2.x e o
+[Ollama](https://ollama.com/download) na máquina:
 
 ```
 ollama pull llama3.2
