@@ -54,6 +54,7 @@ const testConfig = `{
 	"attempt_timeout": "30s",
 	"breaker": {"threshold": 5, "cooldown": "1m"},
 	"rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},
+	"cache": {"ttl": "1h"},
 	"models": {"fast": [{"provider": "ollama", "model": "m"}]},
 	"prices": [{"provider": "ollama", "model": "m", "input_per_million": 0, "output_per_million": 0}],
 	"providers": {"ollama": {"base_url": "http://localhost:11434"}}
@@ -248,6 +249,7 @@ func TestBuildRouterExigeChaveSoDeQuemUsa(t *testing.T) {
 				"attempt_timeout": "30s",
 				"breaker": {"threshold": 5, "cooldown": "1m"},
 	"rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},
+	"cache": {"ttl": "1h"},
 				"providers": {` + tt.providers + `},
 				"models": {"fast": [{"provider": "` + name + `", "model": "m"}]},
 				"prices": [{"provider": "` + name + `", "model": "m", "input_per_million": 0, "output_per_million": 0}]
