@@ -53,6 +53,7 @@ func TestLoadSettings(t *testing.T) {
 const testConfig = `{
 	"attempt_timeout": "30s",
 	"breaker": {"threshold": 5, "cooldown": "1m"},
+	"rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},
 	"models": {"fast": [{"provider": "ollama", "model": "m"}]},
 	"prices": [{"provider": "ollama", "model": "m", "input_per_million": 0, "output_per_million": 0}],
 	"providers": {"ollama": {"base_url": "http://localhost:11434"}}
@@ -108,9 +109,15 @@ func TestRun(t *testing.T) {
 		"LLMUX_CONFIG":       path,
 		"LLMUX_ADDR":         "127.0.0.1:0",
 		"LLMUX_DATABASE_URL": databaseURL(t),
+		// Uma porta sem Redis: o gateway precisa subir mesmo assim, com um aviso,
+		// porque o rate limit falha aberto.
+		"LLMUX_REDIS_URL": "redis://127.0.0.1:1/0",
 	}), &out)
 	if err != nil {
 		t.Fatalf("run() erro inesperado: %v", err)
+	}
+	if !strings.Contains(out.String(), "rate limit desligado") {
+		t.Errorf("saída = %q, want o aviso do Redis indisponível", out.String())
 	}
 
 	if !strings.Contains(out.String(), "addr=127.0.0.1:") {
@@ -118,17 +125,32 @@ func TestRun(t *testing.T) {
 	}
 }
 
-// Verifica que o gateway não sobe sem banco. Sem o banco não há autenticação, e
-// um gateway aberto por esquecimento de uma variável é o pior resultado possível.
-func TestRunNaoSobeSemBanco(t *testing.T) {
+// Verifica que o gateway não sobe sem as variáveis dos serviços. Sem o banco não
+// há autenticação, e um gateway aberto por esquecimento de uma variável é o pior
+// resultado possível. Sem a do Redis, o rate limit ficaria desligado em silêncio.
+func TestRunNaoSobeSemVariaveisDosServicos(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(testConfig), 0o600); err != nil {
 		t.Fatalf("escrevendo config: %v", err)
 	}
 
-	err := run(t.Context(), nil, fakeEnv(map[string]string{"LLMUX_CONFIG": path, "LLMUX_ADDR": "127.0.0.1:0"}), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "LLMUX_DATABASE_URL") {
-		t.Errorf("erro = %v, want um erro citando LLMUX_DATABASE_URL", err)
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "sem banco", env: map[string]string{}, want: "LLMUX_DATABASE_URL"},
+		{name: "sem Redis", env: map[string]string{"LLMUX_DATABASE_URL": databaseURL(t)}, want: "LLMUX_REDIS_URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.env["LLMUX_CONFIG"] = path
+			tt.env["LLMUX_ADDR"] = "127.0.0.1:0"
+			err := run(t.Context(), nil, fakeEnv(tt.env), io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("erro = %v, want um erro citando %s", err, tt.want)
+			}
+		})
 	}
 }
 
@@ -225,6 +247,7 @@ func TestBuildRouterExigeChaveSoDeQuemUsa(t *testing.T) {
 			cfg, err := config.Load(strings.NewReader(`{
 				"attempt_timeout": "30s",
 				"breaker": {"threshold": 5, "cooldown": "1m"},
+	"rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},
 				"providers": {` + tt.providers + `},
 				"models": {"fast": [{"provider": "` + name + `", "model": "m"}]},
 				"prices": [{"provider": "` + name + `", "model": "m", "input_per_million": 0, "output_per_million": 0}]

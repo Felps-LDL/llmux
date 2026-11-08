@@ -38,9 +38,11 @@ type chatChunk struct {
 // streamCompletions responde em SSE, no formato de streaming da OpenAI. Erros antes
 // do primeiro pedaço saem como no modo sem streaming, com status; depois dele, o
 // 200 já foi enviado, e o erro vai como um evento.
-func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in chatRequest, req provider.ChatRequest) {
+func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in chatRequest, req provider.ChatRequest, rsv reservation) {
 	res, err := s.router.ChatStream(r.Context(), in.Model, req)
 	if err != nil {
+		// Nenhum provedor começou a responder: a reserva volta inteira.
+		rsv.settle(r.Context(), 0)
 		writeRouterError(r.Context(), w, in.Model, err)
 		return
 	}
@@ -98,8 +100,11 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 
 	if u == nil {
 		// Sem uso não há como cobrar; o log é o que permite notar um provedor assim.
+		// A reserva fica como está: sem o uso real, o mais seguro é cobrar o
+		// reservado.
 		log.Printf("api: modelo %q: stream sem uso, custo desconhecido", in.Model)
 	} else {
+		rsv.settle(r.Context(), u.PromptTokens+u.CompletionTokens)
 		s.setCost(w, res.Provider, res.Model, *u)
 		if in.StreamOptions.IncludeUsage {
 			out := base

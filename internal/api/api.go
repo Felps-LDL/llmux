@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Felps-LDL/llmux/internal/provider"
+	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/usage"
 )
@@ -27,14 +28,28 @@ const costHeader = "X-Llmux-Cost-Picodollars"
 
 // Server atende a API HTTP do gateway.
 type Server struct {
-	router *router.Router
-	prices usage.PriceTable
-	keys   KeyLookup
+	router        *router.Router
+	prices        usage.PriceTable
+	keys          KeyLookup
+	limiter       Limiter
+	defaultLimits ratelimit.Limits
+}
+
+// Options são as dependências do Server. Uma struct, e não argumentos, porque
+// cinco parâmetros posicionais são um erro de ordem esperando para acontecer.
+type Options struct {
+	Router *router.Router
+	Prices usage.PriceTable
+	Keys   KeyLookup
+	// Limiter nil desliga o rate limit; DefaultLimits vale para as chaves sem
+	// limites próprios.
+	Limiter       Limiter
+	DefaultLimits ratelimit.Limits
 }
 
 // New cria um Server.
-func New(r *router.Router, prices usage.PriceTable, keys KeyLookup) *Server {
-	return &Server{router: r, prices: prices, keys: keys}
+func New(o Options) *Server {
+	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits}
 }
 
 // Handler devolve o http.Handler com as rotas da API.
@@ -125,16 +140,24 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rsv, ok := s.reserve(w, r, req)
+	if !ok {
+		return
+	}
+
 	if in.Stream {
-		s.streamCompletions(w, r, in, req)
+		s.streamCompletions(w, r, in, req, rsv)
 		return
 	}
 
 	res, err := s.router.Chat(r.Context(), in.Model, req)
 	if err != nil {
+		// Nenhum provedor respondeu: a reserva volta inteira.
+		rsv.settle(r.Context(), 0)
 		writeRouterError(r.Context(), w, in.Model, err)
 		return
 	}
+	rsv.settle(r.Context(), res.Response.Usage.PromptTokens+res.Response.Usage.CompletionTokens)
 
 	s.setCost(w, res.Provider, res.Model, res.Response.Usage)
 	w.Header().Set("X-Llmux-Provider", res.Provider)

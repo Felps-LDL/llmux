@@ -2,6 +2,7 @@ IMAGE ?= llmux-gateway
 TAG   ?= dev
 # O Postgres do docker-compose, para make run; sobrescreva pelo ambiente.
 LLMUX_DATABASE_URL ?= postgres://llmux:llmux@localhost:5432/llmux?sslmode=disable
+LLMUX_REDIS_URL ?= redis://localhost:6379/0
 
 .PHONY: all build test lint run docker-build up down clean
 
@@ -18,7 +19,7 @@ lint:
 	golangci-lint run
 
 run:
-	LLMUX_DATABASE_URL='$(LLMUX_DATABASE_URL)' go run ./cmd/gateway
+	LLMUX_DATABASE_URL='$(LLMUX_DATABASE_URL)' LLMUX_REDIS_URL='$(LLMUX_REDIS_URL)' go run ./cmd/gateway
 
 docker-build:
 	docker build -t $(IMAGE):$(TAG) .

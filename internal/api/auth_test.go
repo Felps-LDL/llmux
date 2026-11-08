@@ -28,7 +28,7 @@ func newAuthHandler(p provider.Provider, k api.KeyLookup) http.Handler {
 	r := router.New(map[string][]router.Route{
 		"fast": {{Provider: p, Model: "modelo-fisico"}},
 	}, time.Second, router.BreakerConfig{Threshold: 100, Cooldown: time.Minute})
-	return api.New(r, nil, k).Handler()
+	return api.New(api.Options{Router: r, Keys: k}).Handler()
 }
 
 // Verifica cada forma de um pedido não passar, e que nenhuma chega ao provedor:

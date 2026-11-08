@@ -27,7 +27,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 
-		_, err := s.keys.LookupKey(r.Context(), secret)
+		key, err := s.keys.LookupKey(r.Context(), secret)
 		switch {
 		case errors.Is(err, store.ErrKeyNotFound):
 			writeUnauthorized(w)
@@ -42,9 +42,20 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			log.Printf("api: verificando chave: %v", err)
 			writeError(w, http.StatusServiceUnavailable, "server_error", "não foi possível verificar a chave de API")
 		default:
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), keyCtxKey{}, key)))
 		}
 	})
+}
+
+// keyCtxKey é um tipo próprio, e não uma string, para nenhum outro pacote colidir
+// com a mesma chave de contexto por acaso.
+type keyCtxKey struct{}
+
+// keyFrom devolve a chave que authenticate validou. Só é chamada por handlers
+// atrás do middleware, então a chave sempre está lá.
+func keyFrom(ctx context.Context) store.APIKey {
+	key, _ := ctx.Value(keyCtxKey{}).(store.APIKey)
+	return key
 }
 
 func bearerToken(r *http.Request) (string, bool) {

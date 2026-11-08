@@ -68,8 +68,15 @@ aparece nesta saída; o banco guarda só o hash):
 
 ```
 docker compose -f deploy/docker-compose.yml exec gateway /gateway keys create -name eu
+docker compose -f deploy/docker-compose.yml exec gateway /gateway keys create -name outro -rpm 10 -tpm 5000
 docker compose -f deploy/docker-compose.yml exec gateway /gateway keys revoke -id 1
 ```
+
+Cada chave tem um limite de pedidos e de tokens por minuto: os próprios (`-rpm`,
+`-tpm`) ou o padrão de `rate_limit` na config. Os tokens são reservados antes da
+chamada, pela estimativa da entrada mais o `max_tokens` (1024 se ausente), e acertados
+com o uso real depois. Acima do limite, a resposta é `429` com `Retry-After`; toda
+resposta traz os cabeçalhos `X-Ratelimit-*` no formato da OpenAI.
 
 E use-a no cabeçalho `Authorization`:
 
@@ -91,7 +98,7 @@ Para desenvolver sem o gateway em container, com Go 1.27, golangci-lint 2.x e o
 ```
 ollama pull llama3.2
 cp config.example.json config.json
-docker compose -f deploy/docker-compose.yml up -d postgres
+docker compose -f deploy/docker-compose.yml up -d postgres redis
 go run ./cmd/gateway keys create -name eu   # com LLMUX_DATABASE_URL, como em make run
 make run
 ```
@@ -120,6 +127,7 @@ Variáveis de ambiente:
 | `LLMUX_ADDR` | `:8080` | endereço do servidor |
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
 | `LLMUX_DATABASE_URL` | — | obrigatória; o Postgres das chaves de API (`make run` usa o do compose) |
+| `LLMUX_REDIS_URL` | — | obrigatória; o Redis do rate limit (`make run` usa o do compose) |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 | `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 
@@ -128,6 +136,9 @@ não sobe se uma rota não tiver preço ou provedor configurado.
 
 ## Limitações atuais
 
+- **Rate limit falha aberto:** com o Redis fora do ar, os pedidos passam sem limite (e
+  o log avisa). Um stream interrompido mantém a reserva inteira, porque o uso real não
+  chegou.
 - **Chaves só pela linha de comando:** não há interface de administração (fora de
   escopo). Cada pedido consulta o banco, sem cache, para uma revogação valer na hora.
 - **Stream interrompido não tem custo:** o uso só chega no fim do stream. No streaming,

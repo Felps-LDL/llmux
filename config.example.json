@@ -1,6 +1,7 @@
 {
   "attempt_timeout": "60s",
   "breaker": {"threshold": 5, "cooldown": "30s"},
+  "rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},
   "providers": {
     "ollama": {"base_url": "http://localhost:11434"}
   },

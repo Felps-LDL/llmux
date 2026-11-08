@@ -12,6 +12,7 @@ services:
       LLMUX_CONFIG: /config.json
       # sslmode=disable só porque o tráfego não sai da rede interna do compose.
       LLMUX_DATABASE_URL: postgres://llmux:${POSTGRES_PASSWORD:-llmux}@postgres:5432/llmux?sslmode=disable
+      LLMUX_REDIS_URL: redis://redis:6379/0
     volumes:
       - ./config.compose.json:/config.json:ro
     ports:
@@ -23,6 +24,10 @@ services:
       # O gateway não sobe sem banco: sem esperar o healthcheck, ele falharia ao
       # conectar enquanto o Postgres ainda inicializa.
       postgres:
+        condition: service_healthy
+      # O gateway sobe sem o Redis (o rate limit falha aberto), mas esperar evita
+      # que ele comece com o rate limit desligado.
+      redis:
         condition: service_healthy
 
   ollama:
@@ -71,8 +76,11 @@ services:
 
   redis:
     image: redis:8-alpine
-    # Sem volume: contadores de rate limit e cache se reconstroem sozinhos, e
-    # perdê-los num restart custa no máximo algumas respostas recalculadas.
+    # Sem persistência: contadores de rate limit e cache se reconstroem sozinhos, e
+    # perdê-los num restart custa no máximo algumas respostas recalculadas. Não basta
+    # não declarar volume: a imagem tem um volume anônimo em /data, e o Redis salva
+    # um snapshot ao parar; sem estas flags, o estado sobreviveria ao restart.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:

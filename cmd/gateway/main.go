@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/Felps-LDL/llmux/internal/api"
 	"github.com/Felps-LDL/llmux/internal/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/provider/anthropic"
 	"github.com/Felps-LDL/llmux/internal/provider/ollama"
 	"github.com/Felps-LDL/llmux/internal/provider/openai"
+	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/store"
 )
@@ -42,6 +44,7 @@ const (
 	anthropicKeyEnv = "ANTHROPIC_API_KEY"
 
 	databaseURLEnv = "LLMUX_DATABASE_URL"
+	redisURLEnv    = "LLMUX_REDIS_URL"
 	// Prazo para alcançar o banco na subida: no compose, o healthcheck já garantiu
 	// que ele está pronto, então esperar mais só atrasaria um erro de configuração.
 	dbConnectTimeout = 10 * time.Second
@@ -54,6 +57,7 @@ type settings struct {
 	Addr        string
 	ConfigPath  string
 	DatabaseURL string
+	RedisURL    string
 }
 
 // getenv é injetado para o teste fornecer um ambiente falso sem mexer no
@@ -67,7 +71,30 @@ func loadSettings(getenv func(string) string) settings {
 		s.ConfigPath = v
 	}
 	s.DatabaseURL = getenv(databaseURLEnv)
+	s.RedisURL = getenv(redisURLEnv)
 	return s
+}
+
+// openRedis cria o cliente do rate limit. A variável ausente é erro de
+// configuração e impede a subida; o Redis fora do ar, não: o rate limit falha
+// aberto (ver api.Server.reserve), e subir sem ele é melhor que não subir.
+func openRedis(redisURL string, stdout io.Writer) (*redis.Client, error) {
+	if redisURL == "" {
+		return nil, fmt.Errorf("a variável %s é obrigatória", redisURLEnv)
+	}
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		return nil, fmt.Errorf("lendo %s: %w", redisURLEnv, err)
+	}
+	rdb := redis.NewClient(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), dbConnectTimeout)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		// Escrito na saída, e não só num log, para quem sobe o gateway ver na hora.
+		_, _ = fmt.Fprintf(stdout, "aviso: Redis indisponível, rate limit desligado até ele voltar: %v\n", err)
+	}
+	return rdb, nil
 }
 
 // openStore conecta ao Postgres e aplica as migrations. Usa prazos próprios, e não
@@ -208,6 +235,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return err
 	}
 	defer pool.Close()
+	rdb, err := openRedis(s.RedisURL, stdout)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rdb.Close() }()
 
 	// A porta é aberta antes de anunciar o endereço, para uma porta ocupada ser um
 	// erro na subida. Usa context.Background porque o ctx só significa "encerrar".
@@ -220,7 +252,16 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return fmt.Errorf("escrevendo saída: %w", err)
 	}
 
-	return serve(ctx, ln, api.New(r, cfg.Prices, store.New(pool)).Handler())
+	return serve(ctx, ln, api.New(api.Options{
+		Router:  r,
+		Prices:  cfg.Prices,
+		Keys:    store.New(pool),
+		Limiter: ratelimit.New(rdb),
+		DefaultLimits: ratelimit.Limits{
+			RequestsPerMinute: cfg.RateLimit.RequestsPerMinute,
+			TokensPerMinute:   cfg.RateLimit.TokensPerMinute,
+		},
+	}).Handler())
 }
 
 const keysUsage = "uso: gateway keys create -name NOME [-rpm N] [-tpm N] | gateway keys revoke -id ID"

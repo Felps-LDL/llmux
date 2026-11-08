@@ -28,7 +28,7 @@ func newHandler(p provider.Provider) http.Handler {
 	prices := usage.PriceTable{
 		{Provider: "a", Model: "modelo-fisico"}: {InputPerMillion: 150_000, OutputPerMillion: 600_000},
 	}
-	return api.New(r, prices, keys{testKey: {ID: 1, Name: "teste"}}).Handler()
+	return api.New(api.Options{Router: r, Prices: prices, Keys: keys{testKey: {ID: 1, Name: "teste"}}}).Handler()
 }
 
 // testKey é a chave que newHandler aceita; os testes de autenticação montam o
