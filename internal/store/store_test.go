@@ -92,7 +92,7 @@ func TestCriaEEncontraChaveSemGuardarOSegredo(t *testing.T) {
 	reset(t)
 	s := store.New(pool)
 
-	secret, created, err := s.CreateKey(t.Context(), "cliente-a")
+	secret, created, err := s.CreateKey(t.Context(), "cliente-a", store.Limits{})
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestChaveRevogadaNaoEEncontrada(t *testing.T) {
 	reset(t)
 	s := store.New(pool)
 
-	secret, key, err := s.CreateKey(t.Context(), "cliente-a")
+	secret, key, err := s.CreateKey(t.Context(), "cliente-a", store.Limits{})
 	if err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestChavesSaoUnicasEIndependentes(t *testing.T) {
 	var secrets []string
 	var keys []store.APIKey
 	for i := range 3 {
-		secret, key, err := s.CreateKey(t.Context(), fmt.Sprintf("cliente-%d", i))
+		secret, key, err := s.CreateKey(t.Context(), fmt.Sprintf("cliente-%d", i), store.Limits{})
 		if err != nil {
 			t.Fatalf("CreateKey %d: %v", i, err)
 		}
@@ -243,10 +243,47 @@ func TestSegredoDesconhecidoNaoEEncontrado(t *testing.T) {
 	reset(t)
 	s := store.New(pool)
 
-	if _, _, err := s.CreateKey(t.Context(), "cliente-a"); err != nil {
+	if _, _, err := s.CreateKey(t.Context(), "cliente-a", store.Limits{}); err != nil {
 		t.Fatalf("CreateKey: %v", err)
 	}
 	if _, err := s.LookupKey(t.Context(), "llmux_inventada"); !errors.Is(err, store.ErrKeyNotFound) {
 		t.Errorf("erro = %v, want %v", err, store.ErrKeyNotFound)
+	}
+}
+
+// Verifica o contrato dos limites: um valor dado volta igual, e zero volta zero,
+// que a API lê como "use o padrão da config". Se o zero fosse gravado como 0, e
+// não como NULL, a coluna recusaria o valor (CHECK > 0) e nenhuma chave sem
+// limite próprio poderia ser criada.
+func TestLimitesDaChaveSobrevivemAoBanco(t *testing.T) {
+	reset(t)
+	s := store.New(pool)
+
+	tests := []struct {
+		name   string
+		limits store.Limits
+	}{
+		{name: "padrão da config", limits: store.Limits{}},
+		{name: "próprios", limits: store.Limits{RequestsPerMinute: 120, TokensPerMinute: 50000}},
+		{name: "só tokens", limits: store.Limits{TokensPerMinute: 1000}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			secret, _, err := s.CreateKey(t.Context(), tt.name, tt.limits)
+			if err != nil {
+				t.Fatalf("CreateKey: %v", err)
+			}
+			got, err := s.LookupKey(t.Context(), secret)
+			if err != nil {
+				t.Fatalf("LookupKey: %v", err)
+			}
+			if got.Limits != tt.limits {
+				t.Errorf("Limits = %+v, want %+v", got.Limits, tt.limits)
+			}
+		})
+	}
+
+	if _, _, err := s.CreateKey(t.Context(), "negativa", store.Limits{RequestsPerMinute: -1}); err == nil {
+		t.Error("CreateKey com limite negativo: want erro")
 	}
 }

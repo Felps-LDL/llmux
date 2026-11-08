@@ -223,7 +223,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 	return serve(ctx, ln, api.New(r, cfg.Prices, store.New(pool)).Handler())
 }
 
-const keysUsage = "uso: gateway keys create -name NOME | gateway keys revoke -id ID"
+const keysUsage = "uso: gateway keys create -name NOME [-rpm N] [-tpm N] | gateway keys revoke -id ID"
 
 // runKeys administra chaves pela linha de comando. Criar uma chave é raro e feito
 // por quem opera o gateway, e uma interface de administração está fora de escopo.
@@ -236,6 +236,8 @@ func runKeys(args []string, s settings, stdout io.Writer) error {
 	fs.SetOutput(stdout)
 	name := fs.String("name", "", "quem vai usar a chave")
 	id := fs.Int64("id", 0, "id da chave a revogar")
+	rpm := fs.Int("rpm", 0, "pedidos por minuto; 0 usa o padrão da config")
+	tpm := fs.Int("tpm", 0, "tokens por minuto; 0 usa o padrão da config")
 	// As flags são lidas antes de abrir o banco, para um erro de uso não precisar
 	// de um Postgres de pé.
 	if err := fs.Parse(args[1:]); err != nil {
@@ -261,7 +263,7 @@ func runKeys(args []string, s settings, stdout io.Writer) error {
 	defer cancel()
 
 	if args[0] == "create" {
-		secret, key, err := st.CreateKey(ctx, *name)
+		secret, key, err := st.CreateKey(ctx, *name, store.Limits{RequestsPerMinute: *rpm, TokensPerMinute: *tpm})
 		if err != nil {
 			return err
 		}
