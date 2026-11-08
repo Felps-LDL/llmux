@@ -29,17 +29,23 @@ const costHeader = "X-Llmux-Cost-Picodollars"
 type Server struct {
 	router *router.Router
 	prices usage.PriceTable
+	keys   KeyLookup
 }
 
 // New cria um Server.
-func New(r *router.Router, prices usage.PriceTable) *Server {
-	return &Server{router: r, prices: prices}
+func New(r *router.Router, prices usage.PriceTable, keys KeyLookup) *Server {
+	return &Server{router: r, prices: prices, keys: keys}
 }
 
 // Handler devolve o http.Handler com as rotas da API.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Post("/v1/chat/completions", s.chatCompletions)
+	// Num grupo, para toda rota nova sob /v1 nascer protegida, em vez de depender
+	// de alguém lembrar do middleware.
+	r.Group(func(r chi.Router) {
+		r.Use(s.authenticate)
+		r.Post("/v1/chat/completions", s.chatCompletions)
+	})
 	return r
 }
 

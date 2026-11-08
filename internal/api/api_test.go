@@ -14,6 +14,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/provider/fake"
 	"github.com/Felps-LDL/llmux/internal/router"
+	"github.com/Felps-LDL/llmux/internal/store"
 	"github.com/Felps-LDL/llmux/internal/usage"
 )
 
@@ -27,7 +28,22 @@ func newHandler(p provider.Provider) http.Handler {
 	prices := usage.PriceTable{
 		{Provider: "a", Model: "modelo-fisico"}: {InputPerMillion: 150_000, OutputPerMillion: 600_000},
 	}
-	return api.New(r, prices).Handler()
+	return api.New(r, prices, keys{testKey: {ID: 1, Name: "teste"}}).Handler()
+}
+
+// testKey é a chave que newHandler aceita; os testes de autenticação montam o
+// próprio conjunto.
+const testKey = "llmux_teste"
+
+// keys é um KeyLookup falso: um map do segredo para a chave.
+type keys map[string]store.APIKey
+
+func (k keys) LookupKey(_ context.Context, secret string) (store.APIKey, error) {
+	key, ok := k[secret]
+	if !ok {
+		return store.APIKey{}, store.ErrKeyNotFound
+	}
+	return key, nil
 }
 
 // Verifica o contrato que permite ao cliente trocar só a base_url: um pedido no formato
@@ -41,6 +57,7 @@ func TestChatCompletionsTraduzPedidoEResposta(t *testing.T) {
 	}))
 	body := `{"model": "fast", "messages": [{"role": "user", "content": "oi"}], "temperature": 0, "top_p": 1}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 
 	newHandler(a).ServeHTTP(rec, req)
@@ -124,6 +141,7 @@ func TestChatCompletionsTraduzErroParaStatus(t *testing.T) {
 			a := fake.New("a", fake.Fail(tt.err))
 			body := `{"model": "fast", "messages": [{"role": "user", "content": "oi"}]}`
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+testKey)
 			rec := httptest.NewRecorder()
 
 			newHandler(a).ServeHTTP(rec, req)
@@ -168,6 +186,7 @@ func TestChatCompletionsRecusaPedidoInvalido(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(tt.body))
+			req.Header.Set("Authorization", "Bearer "+testKey)
 			rec := httptest.NewRecorder()
 
 			newHandler(a).ServeHTTP(rec, req)
@@ -190,6 +209,7 @@ func TestChatCompletionsNaoRespondeClienteQueDesistiu(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 
 	newHandler(a).ServeHTTP(rec, req)
@@ -218,6 +238,7 @@ func TestChatCompletionsRepassaLimiteDeTokens(t *testing.T) {
 			a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
 			body := `{"model": "fast", "messages": [{"role": "user", "content": "oi"}], ` + tt.fields + `}`
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+testKey)
 			rec := httptest.NewRecorder()
 
 			newHandler(a).ServeHTTP(rec, req)

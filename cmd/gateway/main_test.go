@@ -3,12 +3,21 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
+
 	"github.com/Felps-LDL/llmux/internal/config"
+	"github.com/Felps-LDL/llmux/internal/store"
 )
 
 // fakeEnv devolve um getenv que lê de um map, para o teste controlar o
@@ -49,6 +58,40 @@ const testConfig = `{
 	"providers": {"ollama": {"base_url": "http://localhost:11434"}}
 }`
 
+// O Postgres sobe sob demanda e uma vez só: os testes que não usam banco não pagam
+// os segundos da subida, e os que usam dividem o mesmo container.
+var (
+	pgOnce      sync.Once
+	pgContainer *postgres.PostgresContainer
+	pgURL       string
+	pgErr       error
+)
+
+func databaseURL(t *testing.T) string {
+	t.Helper()
+	pgOnce.Do(func() {
+		ctx := context.Background()
+		pgContainer, pgErr = postgres.Run(ctx, "postgres:18-alpine",
+			postgres.WithDatabase("llmux"), postgres.WithUsername("llmux"), postgres.WithPassword("llmux"),
+			postgres.BasicWaitStrategies())
+		if pgErr == nil {
+			pgURL, pgErr = pgContainer.ConnectionString(ctx, "sslmode=disable")
+		}
+	})
+	if pgErr != nil {
+		t.Fatalf("subindo o Postgres: %v", pgErr)
+	}
+	return pgURL
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if pgContainer != nil {
+		_ = testcontainers.TerminateContainer(pgContainer)
+	}
+	os.Exit(code)
+}
+
 func TestRun(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(testConfig), 0o600); err != nil {
@@ -61,13 +104,96 @@ func TestRun(t *testing.T) {
 	cancel()
 
 	var out bytes.Buffer
-	err := run(ctx, fakeEnv(map[string]string{"LLMUX_CONFIG": path, "LLMUX_ADDR": "127.0.0.1:0"}), &out)
+	err := run(ctx, nil, fakeEnv(map[string]string{
+		"LLMUX_CONFIG":       path,
+		"LLMUX_ADDR":         "127.0.0.1:0",
+		"LLMUX_DATABASE_URL": databaseURL(t),
+	}), &out)
 	if err != nil {
 		t.Fatalf("run() erro inesperado: %v", err)
 	}
 
 	if !strings.Contains(out.String(), "addr=127.0.0.1:") {
 		t.Errorf("saída = %q, deveria conter %q", out.String(), "addr=127.0.0.1:")
+	}
+}
+
+// Verifica que o gateway não sobe sem banco. Sem o banco não há autenticação, e
+// um gateway aberto por esquecimento de uma variável é o pior resultado possível.
+func TestRunNaoSobeSemBanco(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(testConfig), 0o600); err != nil {
+		t.Fatalf("escrevendo config: %v", err)
+	}
+
+	err := run(t.Context(), nil, fakeEnv(map[string]string{"LLMUX_CONFIG": path, "LLMUX_ADDR": "127.0.0.1:0"}), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "LLMUX_DATABASE_URL") {
+		t.Errorf("erro = %v, want um erro citando LLMUX_DATABASE_URL", err)
+	}
+}
+
+// Verifica o ciclo de vida de uma chave pela linha de comando, contra o banco de
+// verdade: a chave impressa por create é a que o store encontra, e revoke a tira
+// de circulação. É o caminho que um operador usa, sem interface de administração.
+func TestKeysCriaERevoga(t *testing.T) {
+	env := fakeEnv(map[string]string{"LLMUX_DATABASE_URL": databaseURL(t)})
+
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"keys", "create", "-name", "cliente-a"}, env, &out); err != nil {
+		t.Fatalf("keys create: %v", err)
+	}
+	var id int64
+	var secret string
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		if v, ok := strings.CutPrefix(line, "key="); ok {
+			secret = v
+		}
+		if v, ok := strings.CutPrefix(line, "id="); ok {
+			_, _ = fmt.Sscanf(v, "%d", &id)
+		}
+	}
+	if secret == "" || id == 0 {
+		t.Fatalf("saída de create sem id ou chave: %q", out.String())
+	}
+
+	pool, err := pgxpool.New(t.Context(), databaseURL(t))
+	if err != nil {
+		t.Fatalf("conectando: %v", err)
+	}
+	defer pool.Close()
+	st := store.New(pool)
+	if _, err := st.LookupKey(t.Context(), secret); err != nil {
+		t.Fatalf("a chave impressa não foi encontrada: %v", err)
+	}
+
+	if err := run(t.Context(), []string{"keys", "revoke", "-id", fmt.Sprint(id)}, env, io.Discard); err != nil {
+		t.Fatalf("keys revoke: %v", err)
+	}
+	if _, err := st.LookupKey(t.Context(), secret); !errors.Is(err, store.ErrKeyNotFound) {
+		t.Errorf("após revoke: erro = %v, want %v", err, store.ErrKeyNotFound)
+	}
+}
+
+// Erros de uso não podem depender do banco: o ambiente aqui não tem
+// LLMUX_DATABASE_URL, e o erro precisa ser o de uso, não o da variável.
+func TestKeysRecusaUsoErradoSemTocarNoBanco(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "sem subcomando", args: []string{"keys"}, want: "uso:"},
+		{name: "subcomando desconhecido", args: []string{"keys", "delete"}, want: "uso:"},
+		{name: "create sem nome", args: []string{"keys", "create"}, want: "-name"},
+		{name: "revoke sem id", args: []string{"keys", "revoke"}, want: "-id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := run(t.Context(), tt.args, fakeEnv(nil), io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("erro = %v, want um erro citando %q", err, tt.want)
+			}
+		})
 	}
 }
 

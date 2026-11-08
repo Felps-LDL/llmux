@@ -10,6 +10,8 @@ services:
     image: llmux-gateway:dev
     environment:
       LLMUX_CONFIG: /config.json
+      # sslmode=disable só porque o tráfego não sai da rede interna do compose.
+      LLMUX_DATABASE_URL: postgres://llmux:${POSTGRES_PASSWORD:-llmux}@postgres:5432/llmux?sslmode=disable
     volumes:
       - ./config.compose.json:/config.json:ro
     ports:
@@ -18,6 +20,10 @@ services:
       # Sem esperar o modelo, os primeiros pedidos falhariam com 404 do Ollama.
       ollama-pull:
         condition: service_completed_successfully
+      # O gateway não sobe sem banco: sem esperar o healthcheck, ele falharia ao
+      # conectar enquanto o Postgres ainda inicializa.
+      postgres:
+        condition: service_healthy
 
   ollama:
     image: ollama/ollama:0.40.14

@@ -63,27 +63,38 @@ termina depois que o modelo estiver pronto. As portas publicadas (gateway em 808
 Postgres em 5432, Redis em 6379) ficam presas em `127.0.0.1`. A config usada é
 [`deploy/config.compose.json`](deploy/config.compose.json).
 
-Para desenvolver sem containers, com Go 1.27, golangci-lint 2.x e o
-[Ollama](https://ollama.com/download) na máquina:
+Todo pedido precisa de uma chave de API. Crie uma com o próprio binário (a chave só
+aparece nesta saída; o banco guarda só o hash):
 
 ```
-ollama pull llama3.2
-cp config.example.json config.json
-make run
+docker compose -f deploy/docker-compose.yml exec gateway /gateway keys create -name eu
+docker compose -f deploy/docker-compose.yml exec gateway /gateway keys revoke -id 1
 ```
 
-Em outro terminal:
+E use-a no cabeçalho `Authorization`:
 
 ```
-curl http://localhost:8080/v1/chat/completions -d '{
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer llmux_..." -d '{
   "model": "fast",
   "messages": [{"role": "user", "content": "Olá!"}]
 }'
 ```
 
-Com um SDK da OpenAI, troque só a `base_url` para `http://localhost:8080/v1`. A
-resposta traz o provedor e o custo em picodólares nos cabeçalhos `X-Llmux-Provider` e
-`X-Llmux-Cost-Picodollars`.
+Com um SDK da OpenAI, troque só a `base_url` para `http://localhost:8080/v1` e a
+`api_key` para a chave criada. A resposta traz o provedor e o custo em picodólares nos
+cabeçalhos `X-Llmux-Provider` e `X-Llmux-Cost-Picodollars`.
+
+Para desenvolver sem o gateway em container, com Go 1.27, golangci-lint 2.x e o
+[Ollama](https://ollama.com/download) na máquina:
+
+```
+ollama pull llama3.2
+cp config.example.json config.json
+docker compose -f deploy/docker-compose.yml up -d postgres
+go run ./cmd/gateway keys create -name eu   # com LLMUX_DATABASE_URL, como em make run
+make run
+```
 
 Outros comandos:
 
@@ -92,11 +103,13 @@ make              # lint, test e build: o mesmo que o CI roda
 make docker-build # gera a imagem llmux-gateway:dev
 ```
 
-Para rodar a imagem, monte a config. No Linux, com o Ollama na própria máquina:
+Para rodar a imagem fora do compose, monte a config e aponte o banco. No Linux, com o
+Ollama na própria máquina:
 
 ```
 docker run --rm --network host \
   -v "$PWD/config.json:/config.json:ro" -e LLMUX_CONFIG=/config.json \
+  -e LLMUX_DATABASE_URL='postgres://llmux:llmux@localhost:5432/llmux?sslmode=disable' \
   llmux-gateway:dev
 ```
 
@@ -106,6 +119,7 @@ Variáveis de ambiente:
 |---|---|---|
 | `LLMUX_ADDR` | `:8080` | endereço do servidor |
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
+| `LLMUX_DATABASE_URL` | — | obrigatória; o Postgres das chaves de API (`make run` usa o do compose) |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 | `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 
@@ -114,7 +128,8 @@ não sobe se uma rota não tiver preço ou provedor configurado.
 
 ## Limitações atuais
 
-- **Sem autenticação:** qualquer um que alcance o gateway pode usá-lo. Entra na Fase 2.
+- **Chaves só pela linha de comando:** não há interface de administração (fora de
+  escopo). Cada pedido consulta o banco, sem cache, para uma revogação valer na hora.
 - **Stream interrompido não tem custo:** o uso só chega no fim do stream. No streaming,
   o custo vai como trailer HTTP, que muitos clientes ignoram.
 - **OpenAI imitada pelo Ollama:** o adaptador da OpenAI funciona contra o `/v1` do Ollama,

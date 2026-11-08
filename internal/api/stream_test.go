@@ -53,6 +53,7 @@ func TestChatCompletionsStreamSegueFormatoDaOpenAI(t *testing.T) {
 	))
 	body := streamBody + `, "stream_options": {"include_usage": true}}`
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 
 	newHandler(a).ServeHTTP(rec, req)
@@ -120,6 +121,7 @@ func TestChatCompletionsStreamSegueFormatoDaOpenAI(t *testing.T) {
 func TestChatCompletionsStreamSinalizaErroNoMeio(t *testing.T) {
 	a := fake.New("a", fake.StreamFailAfter(provider.ErrUnavailable, provider.StreamChunk{Content: "o"}))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(streamBody+"}"))
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 
 	newHandler(a).ServeHTTP(rec, req)
@@ -147,6 +149,7 @@ func TestChatCompletionsStreamSinalizaErroNoMeio(t *testing.T) {
 func TestChatCompletionsStreamUsaStatusParaErroAntesDoPrimeiroPedaco(t *testing.T) {
 	a := fake.New("a", fake.Fail(provider.ErrUnavailable))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(streamBody+"}"))
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 
 	newHandler(a).ServeHTTP(rec, req)
@@ -164,6 +167,7 @@ func TestChatCompletionsStreamSoEnviaUsoQuandoPedido(t *testing.T) {
 		provider.StreamChunk{Content: "olá", FinishReason: "stop", Usage: &provider.Usage{PromptTokens: 1, CompletionTokens: 1}},
 	))
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/chat/completions", strings.NewReader(streamBody+"}"))
+	req.Header.Set("Authorization", "Bearer "+testKey)
 	rec := httptest.NewRecorder()
 
 	newHandler(a).ServeHTTP(rec, req)
