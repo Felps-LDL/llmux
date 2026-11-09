@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Felps-LDL/llmux/internal/api"
+	"github.com/Felps-LDL/llmux/internal/cache"
 	"github.com/Felps-LDL/llmux/internal/config"
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/provider/anthropic"
@@ -261,6 +262,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 			RequestsPerMinute: cfg.RateLimit.RequestsPerMinute,
 			TokensPerMinute:   cfg.RateLimit.TokensPerMinute,
 		},
+		// O mesmo Redis do rate limit: os dois guardam dados que se reconstroem, e
+		// um segundo Redis seria mais uma peça para operar sem ganho.
+		Cache: cache.New(rdb, cfg.CacheTTL),
 	}).Handler())
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Felps-LDL/llmux/internal/cache"
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
@@ -33,6 +34,7 @@ type Server struct {
 	keys          KeyLookup
 	limiter       Limiter
 	defaultLimits ratelimit.Limits
+	cache         ResponseCache
 }
 
 // Options são as dependências do Server. Uma struct, e não argumentos, porque
@@ -45,11 +47,13 @@ type Options struct {
 	// limites próprios.
 	Limiter       Limiter
 	DefaultLimits ratelimit.Limits
+	// Cache nil desliga o cache de respostas.
+	Cache ResponseCache
 }
 
 // New cria um Server.
 func New(o Options) *Server {
-	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits}
+	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits, cache: o.Cache}
 }
 
 // Handler devolve o http.Handler com as rotas da API.
@@ -146,8 +150,26 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if in.Stream {
+		w.Header().Set(cacheHeader, "bypass")
 		s.streamCompletions(w, r, in, req, rsv)
 		return
+	}
+
+	key, cacheable := s.cacheKey(r.Context(), in.Model, req)
+	if cacheable {
+		if entry, hit := s.cacheGet(r.Context(), key); hit {
+			// O provedor não foi chamado: os tokens reservados voltam inteiros, e o
+			// custo deste pedido é zero.
+			rsv.settle(r.Context(), 0)
+			w.Header().Set(cacheHeader, "hit")
+			w.Header().Set(costHeader, "0")
+			w.Header().Set("X-Llmux-Provider", entry.Provider)
+			writeCompletion(w, in.Model, entry.Response)
+			return
+		}
+		w.Header().Set(cacheHeader, "miss")
+	} else {
+		w.Header().Set(cacheHeader, "bypass")
 	}
 
 	res, err := s.router.Chat(r.Context(), in.Model, req)
@@ -161,18 +183,28 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	s.setCost(w, res.Provider, res.Model, res.Response.Usage)
 	w.Header().Set("X-Llmux-Provider", res.Provider)
+	writeCompletion(w, in.Model, *res.Response)
 
-	u := res.Response.Usage
+	// Depois de responder: o cliente não precisa esperar a gravação.
+	if cacheable {
+		s.cacheSet(r.Context(), key, cache.Entry{Provider: res.Provider, Model: res.Model, Response: *res.Response})
+	}
+}
+
+// writeCompletion escreve uma resposta no formato da OpenAI. É a mesma para uma
+// resposta do provedor e para um acerto do cache: duas cópias divergiriam.
+func writeCompletion(w http.ResponseWriter, model string, resp provider.ChatResponse) {
+	u := resp.Usage
 	writeJSON(w, http.StatusOK, chatResponse{
 		ID:      "chatcmpl-" + rand.Text(),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		// O modelo lógico que o cliente pediu: o nome físico é detalhe interno, que
 		// pode mudar por config sem o cliente perceber.
-		Model: in.Model,
+		Model: model,
 		Choices: []chatChoice{{
-			Message:      chatMessage{Role: string(provider.RoleAssistant), Content: res.Response.Content},
-			FinishReason: res.Response.FinishReason,
+			Message:      chatMessage{Role: string(provider.RoleAssistant), Content: resp.Content},
+			FinishReason: resp.FinishReason,
 		}},
 		Usage: chatUsage{
 			PromptTokens:     u.PromptTokens,

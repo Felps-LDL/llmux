@@ -78,6 +78,10 @@ chamada, pela estimativa da entrada mais o `max_tokens` (1024 se ausente), e ace
 com o uso real depois. Acima do limite, a resposta é `429` com `Retry-After`; toda
 resposta traz os cabeçalhos `X-Ratelimit-*` no formato da OpenAI.
 
+Pedidos com `"temperature": 0` passam por um cache exato, separado por chave de API e
+válido pelo `cache.ttl` da config: um pedido idêntico volta do Redis, sem chamar o
+provedor e com custo zero. O cabeçalho `X-Llmux-Cache` diz `hit`, `miss` ou `bypass`.
+
 E use-a no cabeçalho `Authorization`:
 
 ```
@@ -136,6 +140,9 @@ não sobe se uma rota não tiver preço ou provedor configurado.
 
 ## Limitações atuais
 
+- **Cache só sem streaming e com temperatura 0:** acima de zero, o cliente pede
+  variedade. Dois pedidos iguais ao mesmo tempo chamam o provedor duas vezes, porque
+  nenhum dos dois encontra a resposta do outro no cache.
 - **Rate limit falha aberto:** com o Redis fora do ar, os pedidos passam sem limite (e
   o log avisa). Um stream interrompido mantém a reserva inteira, porque o uso real não
   chegou.

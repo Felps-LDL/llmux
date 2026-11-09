@@ -24,6 +24,15 @@ existe; nenhum entra sem passar pela fase em andamento.
   pelos pedaços entregues ou contar os tokens no gateway. Importa na Fase 4, quando o custo
   vira registro por chave de API. Origem: Fase 2, streaming.
 
+## Cache
+
+- **Cache no streaming.** Hoje só pedidos sem streaming usam o cache. Um acerto
+  precisaria ser devolvido como uma sequência de eventos SSE, e um stream só pode ser
+  gravado depois de terminar. Origem: Fase 2, cache exato.
+- **Pedidos iguais simultâneos.** Dois pedidos idênticos ao mesmo tempo dão dois miss
+  e chamam o provedor duas vezes. Um singleflight resolveria dentro de uma réplica;
+  entre réplicas, seria preciso uma trava no Redis. Origem: Fase 2, cache exato.
+
 ## CI
 
 - **`actionlint` no CI.** Hoje um erro no `ci.yml` só aparece quando o
