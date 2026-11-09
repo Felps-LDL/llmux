@@ -6,10 +6,10 @@ Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
 provedores, com fallback, rate limiting, cache, contabilidade de custo e
 observabilidade.
 
-> **Estado:** Fase 1 de 5 concluída. O gateway já atende
-> `POST /v1/chat/completions` sem streaming, com fallback, circuit breaker e cálculo
-> de custo, usando o Ollama como provedor. Redis, Postgres, filas e os demais
-> provedores da arquitetura abaixo são o alvo, construído fase a fase.
+> **Estado:** Fase 2 de 5 concluída. O gateway atende `POST /v1/chat/completions`, com
+> e sem streaming, na frente do Ollama, da OpenAI e da Anthropic, com fallback, circuit
+> breaker, autenticação por chave de API, rate limit de pedidos e tokens, cache exato e
+> cálculo de custo. Observabilidade, filas e Kubernetes são o alvo das próximas fases.
 
 ## O alvo
 
@@ -44,7 +44,7 @@ decide quais provedores atendem, em que ordem.
 |---|---|---|
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
 | 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | concluída |
-| 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | — |
+| 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | concluída |
 | 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
 | 4 | Fila de uso e worker, `/v1/batches` | — |
 | 5 | Kubernetes com HPA pela fila | — |
@@ -177,6 +177,11 @@ Cada decisão relevante tem um ADR em [`docs/decisions/`](docs/decisions/).
 O Ollama local é o provedor padrão de desenvolvimento. Uma chave paga com limite
 baixo serve só para provar que o gateway funciona com provedor real. Os testes
 usam um provedor falso: o núcleo é testável sem rede, sem chave e sem custo.
+
+Os adaptadores da OpenAI e da Anthropic foram testados contra o formato documentado
+de cada API (com `httptest`) e contra o Ollama, que imita as duas. Ainda não foram
+validados contra os provedores reais: uma imitação pode diferir em detalhes, como o
+formato dos erros. Postgres e Redis rodam de verdade nos testes, com testcontainers.
 
 ## O que ficou de fora e por quê
 
