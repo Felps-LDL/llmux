@@ -170,6 +170,7 @@ Cada decisão relevante tem um ADR em [`docs/decisions/`](docs/decisions/).
 - [0001 — Imagem de runtime distroless](docs/decisions/0001-imagem-distroless.md)
 - [0002 — Precificação pelo modelo da rota](docs/decisions/0002-precificacao-pelo-modelo-da-rota.md)
 - [0003 — Fallback e circuit breaker](docs/decisions/0003-fallback-e-circuit-breaker.md)
+- [0004 — Rate limit com reserva e acerto](docs/decisions/0004-rate-limit-com-reserva-e-acerto.md)
 
 ## Custo
 
