@@ -215,25 +215,29 @@ func TestBaldesDeChavesDiferentesSaoIndependentes(t *testing.T) {
 	}
 }
 
-// O único teste que depende do tempo real, porque o relógio é o do Redis. A taxa
-// alta (10 por segundo) mantém a espera curta; a margem (300 ms para 1 ficha)
-// evita falhas por atraso do agendador.
+// O teste de recarga depende do tempo real, porque o relógio é o do Redis. O
+// cuidado é não depender da velocidade da máquina: o balde é esvaziado por uma
+// única reserva, e não por centenas de chamadas, que numa máquina lenta levariam
+// tempo suficiente para o balde recarregar no meio. E o custo testado (100 tokens,
+// 1 s de recarga) é grande demais para a folga entre duas chamadas cobrir. Esta
+// versão substituiu uma que esgotava 600 pedidos um a um e falhou no CI.
 func TestBaldeRecarregaComOTempo(t *testing.T) {
 	l := ratelimit.New(rdb)
 	key := nextKey()
-	limits := ratelimit.Limits{RequestsPerMinute: 600, TokensPerMinute: 100000}
+	// 6000 tokens por minuto: 100 por segundo.
+	limits := ratelimit.Limits{RequestsPerMinute: 600, TokensPerMinute: 6000}
 
-	for range 600 {
-		reserve(t, l, key, limits, 1)
+	if d := reserve(t, l, key, limits, 6000); !d.Allowed {
+		t.Fatalf("reserva do balde inteiro recusada: %+v", d)
 	}
-	if d := reserve(t, l, key, limits, 1); d.Allowed {
-		t.Fatal("balde esgotado permitiu pedido, want recusado")
+	if d := reserve(t, l, key, limits, 100); d.Allowed {
+		t.Fatal("balde esvaziado permitiu 100 tokens, want recusado")
 	}
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 
-	if d := reserve(t, l, key, limits, 1); !d.Allowed {
-		t.Errorf("após 300ms (~3 fichas recarregadas) o pedido foi recusado: %+v", d)
+	if d := reserve(t, l, key, limits, 100); !d.Allowed {
+		t.Errorf("após 1,5 s (~150 tokens recarregados) a reserva de 100 foi recusada: %+v", d)
 	}
 }
 
