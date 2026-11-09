@@ -22,11 +22,19 @@ type Provider struct {
 	BaseURL string `json:"base_url"`
 }
 
+// RateLimit são os limites por minuto das chaves que não têm limites próprios.
+type RateLimit struct {
+	RequestsPerMinute int `json:"requests_per_minute"`
+	TokensPerMinute   int `json:"tokens_per_minute"`
+}
+
 // Config é a configuração já validada.
 type Config struct {
 	AttemptTimeout   time.Duration
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
+	RateLimit        RateLimit
+	CacheTTL         time.Duration
 	Providers        map[string]Provider
 	Models           map[string][]Route
 	Prices           usage.PriceTable
@@ -64,6 +72,10 @@ type rawConfig struct {
 		Threshold int      `json:"threshold"`
 		Cooldown  duration `json:"cooldown"`
 	} `json:"breaker"`
+	RateLimit RateLimit `json:"rate_limit"`
+	Cache     struct {
+		TTL duration `json:"ttl"`
+	} `json:"cache"`
 	Providers map[string]Provider `json:"providers"`
 	Models    map[string][]Route  `json:"models"`
 	Prices    []rawPrice          `json:"prices"`
@@ -95,6 +107,18 @@ func Load(r io.Reader) (*Config, error) {
 	// Zero faria um provedor morto receber uma sonda a cada pedido.
 	if raw.Breaker.Cooldown <= 0 {
 		problems = append(problems, errors.New("breaker.cooldown precisa ser positivo"))
+	}
+
+	// Sem padrão, uma chave sem limites próprios não teria balde: o bloco é
+	// obrigatório, como os preços.
+	if raw.RateLimit.RequestsPerMinute <= 0 || raw.RateLimit.TokensPerMinute <= 0 {
+		problems = append(problems, errors.New("rate_limit precisa de requests_per_minute e tokens_per_minute positivos"))
+	}
+
+	// Sem prazo, uma resposta ficaria no cache para sempre, mesmo depois de o
+	// provedor atualizar o modelo.
+	if raw.Cache.TTL <= 0 {
+		problems = append(problems, errors.New("cache.ttl precisa ser positivo"))
 	}
 
 	for name, p := range raw.Providers {
@@ -152,6 +176,8 @@ func Load(r io.Reader) (*Config, error) {
 		AttemptTimeout:   time.Duration(raw.AttemptTimeout),
 		BreakerThreshold: raw.Breaker.Threshold,
 		BreakerCooldown:  time.Duration(raw.Breaker.Cooldown),
+		RateLimit:        raw.RateLimit,
+		CacheTTL:         time.Duration(raw.Cache.TTL),
 		Providers:        raw.Providers,
 		Models:           raw.Models,
 		Prices:           prices,

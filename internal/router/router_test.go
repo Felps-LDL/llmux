@@ -144,6 +144,12 @@ func (f providerFunc) Chat(ctx context.Context, req provider.ChatRequest) (*prov
 	return f(ctx, req)
 }
 
+// Os testes que usam providerFunc são de Chat; um ChatStream chamado aqui é um
+// teste errado, e o erro sem classe faz o router parar em vez de mascará-lo.
+func (f providerFunc) ChatStream(context.Context, provider.ChatRequest) (provider.StreamReader, error) {
+	return nil, errors.New("providerFunc: ChatStream não usado neste teste")
+}
+
 // Verifica o caso que o teste de contexto cancelado não alcança: o cliente
 // desiste enquanto o A está em andamento. Importa porque a próxima tentativa
 // poderia custar dinheiro por uma resposta que ninguém vai ler.

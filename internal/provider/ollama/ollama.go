@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 
 	"github.com/Felps-LDL/llmux/internal/provider"
@@ -52,7 +51,8 @@ type options struct {
 type chatRequest struct {
 	Model    string    `json:"model"`
 	Messages []message `json:"messages"`
-	// Explícito porque o padrão da API do Ollama é responder em streaming.
+	// Sem omitempty: o padrão da API do Ollama é responder em streaming, então o
+	// false precisa ir explícito no JSON.
 	Stream  bool    `json:"stream"`
 	Options options `json:"options"`
 }
@@ -60,6 +60,7 @@ type chatRequest struct {
 type chatResponse struct {
 	Model           string  `json:"model"`
 	Message         message `json:"message"`
+	Done            bool    `json:"done"`
 	DoneReason      string  `json:"done_reason"`
 	PromptEvalCount int     `json:"prompt_eval_count"`
 	EvalCount       int     `json:"eval_count"`
@@ -68,41 +69,17 @@ type chatResponse struct {
 
 // Chat envia o pedido ao Ollama e traduz a resposta e os erros para o nosso contrato.
 func (c *Client) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
-	messages := make([]message, len(req.Messages))
-	for i, m := range req.Messages {
-		messages[i] = message{Role: string(m.Role), Content: m.Content}
-	}
-
-	body, err := json.Marshal(chatRequest{
-		Model:    req.Model,
-		Messages: messages,
-		Options:  options{Temperature: req.Temperature, NumPredict: req.MaxTokens},
-	})
+	body, err := c.send(ctx, req, false)
 	if err != nil {
-		return nil, fmt.Errorf("codificando pedido: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("criando pedido: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return nil, classifyTransportError(err)
+		return nil, err
 	}
 	// O erro de fechar é ignorado de propósito: a esta altura, o corpo já foi lido ou
 	// a chamada já falhou, e ele não mudaria o resultado.
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, statusError(resp)
-	}
+	defer func() { _ = body.Close() }()
 
 	var out chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, classifyTransportError(err)
+	if err := json.NewDecoder(body).Decode(&out); err != nil {
+		return nil, provider.ClassifyTransportError(err)
 	}
 	// Status 200 não garante sucesso: um corpo com "error" também é uma falha.
 	if out.Error != "" {
@@ -120,21 +97,95 @@ func (c *Client) Chat(ctx context.Context, req provider.ChatRequest) (*provider.
 	}, nil
 }
 
-// classifyTransportError trata falhas sem status HTTP: de conexão, de prazo ou de
-// uma resposta que chegou cortada ou malformada.
-func classifyTransportError(err error) error {
-	// Fica sem classe: quem desistiu foi o cliente, não o provedor.
-	if errors.Is(err, context.Canceled) {
-		return err
+// ChatStream envia o pedido em modo streaming. Só falhas antes do primeiro pedaço
+// saem daqui; as do meio do stream aparecem em Recv.
+func (c *Client) ChatStream(ctx context.Context, req provider.ChatRequest) (provider.StreamReader, error) {
+	body, err := c.send(ctx, req, true)
+	if err != nil {
+		return nil, err
+	}
+	return &streamReader{body: body, dec: json.NewDecoder(body)}, nil
+}
+
+// send monta e envia o pedido e devolve o corpo de uma resposta 200, que quem
+// chama precisa fechar; em caso de erro, send já fechou. Devolve só o corpo porque
+// o status já foi tratado aqui e nenhum chamador precisa do resto.
+func (c *Client) send(ctx context.Context, req provider.ChatRequest, stream bool) (io.ReadCloser, error) {
+	messages := make([]message, len(req.Messages))
+	for i, m := range req.Messages {
+		messages[i] = message{Role: string(m.Role), Content: m.Content}
 	}
 
-	// O timeout do transporte nem sempre aparece como context.DeadlineExceeded.
-	var netErr net.Error
-	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
-		return fmt.Errorf("%w: %w", provider.ErrTimeout, err)
+	body, err := json.Marshal(chatRequest{
+		Model:    req.Model,
+		Messages: messages,
+		Stream:   stream,
+		Options:  options{Temperature: req.Temperature, NumPredict: req.MaxTokens},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("codificando pedido: %w", err)
 	}
 
-	return fmt.Errorf("%w: %w", provider.ErrUnavailable, err)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("criando pedido: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, provider.ClassifyTransportError(err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, statusError(resp)
+	}
+	return resp.Body, nil
+}
+
+type streamReader struct {
+	body io.ReadCloser
+	dec  *json.Decoder
+	done bool
+}
+
+func (r *streamReader) Recv() (provider.StreamChunk, error) {
+	if r.done {
+		return provider.StreamChunk{}, io.EOF
+	}
+
+	var line chatResponse
+	if err := r.dec.Decode(&line); err != nil {
+		// O corpo acabar antes do done significa uma resposta cortada. Devolver io.EOF
+		// aqui entregaria meia resposta ao cliente como se fosse completa.
+		if errors.Is(err, io.EOF) {
+			err = io.ErrUnexpectedEOF
+		}
+		return provider.StreamChunk{}, provider.ClassifyTransportError(err)
+	}
+	if line.Error != "" {
+		return provider.StreamChunk{}, fmt.Errorf("%s: %w", line.Error, provider.ErrUnavailable)
+	}
+
+	if !line.Done {
+		return provider.StreamChunk{Content: line.Message.Content}, nil
+	}
+	r.done = true
+	return provider.StreamChunk{
+		Content:      line.Message.Content,
+		FinishReason: finishReason(line.DoneReason),
+		Usage: &provider.Usage{
+			PromptTokens:     line.PromptEvalCount,
+			CompletionTokens: line.EvalCount,
+		},
+	}, nil
+}
+
+// Close solta a conexão. Sem ele, um cliente que desiste no meio deixaria o Ollama
+// gerando tokens para ninguém e a conexão presa fora do pool.
+func (r *streamReader) Close() error {
+	return r.body.Close()
 }
 
 func statusError(resp *http.Response) error {
@@ -150,16 +201,7 @@ func statusError(resp *http.Response) error {
 		}
 	}
 
-	switch {
-	case resp.StatusCode == http.StatusTooManyRequests:
-		return fmt.Errorf("status %d: %s: %w", resp.StatusCode, detail, provider.ErrRateLimited)
-	case resp.StatusCode >= http.StatusInternalServerError:
-		return fmt.Errorf("status %d: %s: %w", resp.StatusCode, detail, provider.ErrUnavailable)
-	default:
-		// Sem classe: um 400 ou um 404 de modelo inexistente falharia igual em
-		// qualquer nova tentativa e não diz nada sobre a saúde do provedor.
-		return fmt.Errorf("status %d: %s", resp.StatusCode, detail)
-	}
+	return provider.StatusError(resp.StatusCode, detail)
 }
 
 // finishReason traduz para o vocabulário da OpenAI, que é o da nossa API. A

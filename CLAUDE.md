@@ -18,11 +18,13 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **2** (ainda não iniciada; próxima depois do merge do PR #2)
-Última coisa concluída: Fase 1 fechada no PR #2 (router, breaker, custo, config, adaptador
-do Ollama, endpoint e servidor, ADRs 0002 e 0003). Provada de ponta a ponta com o Ollama
-real, no binário e no container, e com o SDK oficial em Go. CI verde. Perguntas de
-entrevista respondidas depois de revisão.
+Fase: **2** (código concluído na branch `fase-2`; falta o PR com CI verde e as perguntas)
+Última coisa concluída: Fase 2 inteira — streaming, adaptadores da OpenAI e da Anthropic
+(provados contra o Ollama, que imita as duas APIs), docker-compose, Postgres com migrations
+e testcontainers, autenticação por chave, rate limit com reserva e acerto (ADR 0004) e cache
+exato. A pedido do Felipe, Claude escreve o código e as mensagens de commit; ele revisa e
+responde perguntas de cenário. Pendentes para o fechamento: as perguntas de cenário que
+ficaram sem resposta durante a fase e as cinco de entrevista.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
@@ -82,12 +84,13 @@ Interface central, tudo é escrito contra ela:
 type Provider interface {
     Name() string
     Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+    ChatStream(ctx context.Context, req ChatRequest) (StreamReader, error)
 }
 ```
 
-`ChatStream(ctx, req) (StreamReader, error)` entra na interface na Fase 2, junto com
-o streaming. Antes disso, toda implementação teria um stub devolvendo "não
-implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum faz.
+`ChatStream` só entrou na Fase 2, junto com o streaming. Antes disso, toda
+implementação teria um stub devolvendo "não implementado", e o tipo afirmaria que
+todo provedor faz streaming quando nenhum faz.
 
 ## Fases
 
@@ -95,9 +98,9 @@ implementado", e o tipo afirmaria que todo provedor faz streaming quando nenhum 
 |---|---|
 | **0** | Repo, Makefile, golangci-lint, CI verde, Dockerfile, README com o alvo |
 | **1** | Interface `Provider`, provedor falso, router com fallback e breaker, contagem de token e custo, carga de config, adaptador do Ollama, endpoint sem streaming, cobertura alta |
-| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit no Redis, cache exato, Postgres e migrations, testcontainers, docker-compose |
+| **2** | Streaming SSE (`ChatStream` em `Provider`), adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit no Redis, cache exato, Postgres e migrations (chaves de API), testcontainers, docker-compose |
 | **3** | slog com request_id, métricas Prometheus, tracing OTel, dashboard Grafana, prints no README |
-| **4** | Fila de uso e worker, `/v1/batches`, métrica de profundidade de fila |
+| **4** | Fila de uso e worker, tabelas de uso no Postgres, `/v1/batches`, métrica de profundidade de fila |
 | **5** | Kubernetes: deployments separados, HPA pela fila, kind documentado |
 
 **Não implemente nada de uma fase futura.** Se você sugerir algo fora da fase atual e
@@ -123,6 +126,9 @@ llm_queue_depth{queue}
 - **Fases 0 e 1** — você escreve, com a explicação vindo antes do código. O Felipe revisa
   linha por linha e pergunta o que não entendeu.
 - **Fases 2 e 3** — você propõe a abordagem e as armadilhas; o Felipe escreve; você revisa.
+  Transição gradual, por decisão do Felipe: nos primeiros componentes da Fase 2, você
+  também passa a estrutura com lacunas, cada vez maiores, até ele escrever sozinho. Ao
+  fim de cada componente, ele explica com as próprias palavras o que escreveu.
 - **Fases 4 e 5** — o Felipe escreve; você só revisa e questiona. Não escreva a solução
   antes de ele tentar.
 

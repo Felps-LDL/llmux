@@ -14,7 +14,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Felps-LDL/llmux/internal/cache"
 	"github.com/Felps-LDL/llmux/internal/provider"
+	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/usage"
 )
@@ -23,21 +25,46 @@ import (
 // porque um prompt com contexto longo é um pedido legítimo.
 const maxBodyBytes = 10 << 20
 
+const costHeader = "X-Llmux-Cost-Picodollars"
+
 // Server atende a API HTTP do gateway.
 type Server struct {
-	router *router.Router
-	prices usage.PriceTable
+	router        *router.Router
+	prices        usage.PriceTable
+	keys          KeyLookup
+	limiter       Limiter
+	defaultLimits ratelimit.Limits
+	cache         ResponseCache
+}
+
+// Options são as dependências do Server. Uma struct, e não argumentos, porque
+// cinco parâmetros posicionais são um erro de ordem esperando para acontecer.
+type Options struct {
+	Router *router.Router
+	Prices usage.PriceTable
+	Keys   KeyLookup
+	// Limiter nil desliga o rate limit; DefaultLimits vale para as chaves sem
+	// limites próprios.
+	Limiter       Limiter
+	DefaultLimits ratelimit.Limits
+	// Cache nil desliga o cache de respostas.
+	Cache ResponseCache
 }
 
 // New cria um Server.
-func New(r *router.Router, prices usage.PriceTable) *Server {
-	return &Server{router: r, prices: prices}
+func New(o Options) *Server {
+	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits, cache: o.Cache}
 }
 
 // Handler devolve o http.Handler com as rotas da API.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Post("/v1/chat/completions", s.chatCompletions)
+	// Num grupo, para toda rota nova sob /v1 nascer protegida, em vez de depender
+	// de alguém lembrar do middleware.
+	r.Group(func(r chi.Router) {
+		r.Use(s.authenticate)
+		r.Post("/v1/chat/completions", s.chatCompletions)
+	})
 	return r
 }
 
@@ -54,8 +81,15 @@ type chatRequest struct {
 	MaxTokens   int      `json:"max_tokens"`
 	// Os SDKs atuais também oferecem este nome para o mesmo limite. Sem ele, o limite
 	// seria ignorado sem aviso, e o cliente pagaria por uma resposta inteira.
-	MaxCompletionTokens int  `json:"max_completion_tokens"`
-	Stream              bool `json:"stream"`
+	MaxCompletionTokens int           `json:"max_completion_tokens"`
+	Stream              bool          `json:"stream"`
+	StreamOptions       streamOptions `json:"stream_options"`
+}
+
+type streamOptions struct {
+	// Na API da OpenAI, o uso só vai no stream se o cliente pedir; um pedaço extra
+	// sem choices poderia quebrar clientes que não o esperam.
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatChoice struct {
@@ -110,33 +144,67 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.router.Chat(r.Context(), in.Model, req)
-	if err != nil {
-		writeRouterError(r.Context(), w, in.Model, err)
+	rsv, ok := s.reserve(w, r, req)
+	if !ok {
 		return
 	}
 
-	// O provedor já respondeu e cobrou: um erro de preço não pode custar a resposta
-	// ao cliente. A carga da config impede que isso aconteça em produção.
-	cost, err := s.prices.Cost(res.Provider, res.Model, res.Response.Usage)
-	if err != nil {
-		log.Printf("api: calculando custo: %v", err)
-	} else {
-		w.Header().Set("X-Llmux-Cost-Picodollars", strconv.FormatInt(int64(cost), 10))
+	if in.Stream {
+		w.Header().Set(cacheHeader, "bypass")
+		s.streamCompletions(w, r, in, req, rsv)
+		return
 	}
-	w.Header().Set("X-Llmux-Provider", res.Provider)
 
-	u := res.Response.Usage
+	key, cacheable := s.cacheKey(r.Context(), in.Model, req)
+	if cacheable {
+		if entry, hit := s.cacheGet(r.Context(), key); hit {
+			// O provedor não foi chamado: os tokens reservados voltam inteiros, e o
+			// custo deste pedido é zero.
+			rsv.settle(r.Context(), 0)
+			w.Header().Set(cacheHeader, "hit")
+			w.Header().Set(costHeader, "0")
+			w.Header().Set("X-Llmux-Provider", entry.Provider)
+			writeCompletion(w, in.Model, entry.Response)
+			return
+		}
+		w.Header().Set(cacheHeader, "miss")
+	} else {
+		w.Header().Set(cacheHeader, "bypass")
+	}
+
+	res, err := s.router.Chat(r.Context(), in.Model, req)
+	if err != nil {
+		// Nenhum provedor respondeu: a reserva volta inteira.
+		rsv.settle(r.Context(), 0)
+		writeRouterError(r.Context(), w, in.Model, err)
+		return
+	}
+	rsv.settle(r.Context(), res.Response.Usage.PromptTokens+res.Response.Usage.CompletionTokens)
+
+	s.setCost(w, res.Provider, res.Model, res.Response.Usage)
+	w.Header().Set("X-Llmux-Provider", res.Provider)
+	writeCompletion(w, in.Model, *res.Response)
+
+	// Depois de responder: o cliente não precisa esperar a gravação.
+	if cacheable {
+		s.cacheSet(r.Context(), key, cache.Entry{Provider: res.Provider, Model: res.Model, Response: *res.Response})
+	}
+}
+
+// writeCompletion escreve uma resposta no formato da OpenAI. É a mesma para uma
+// resposta do provedor e para um acerto do cache: duas cópias divergiriam.
+func writeCompletion(w http.ResponseWriter, model string, resp provider.ChatResponse) {
+	u := resp.Usage
 	writeJSON(w, http.StatusOK, chatResponse{
 		ID:      "chatcmpl-" + rand.Text(),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		// O modelo lógico que o cliente pediu: o nome físico é detalhe interno, que
 		// pode mudar por config sem o cliente perceber.
-		Model: in.Model,
+		Model: model,
 		Choices: []chatChoice{{
-			Message:      chatMessage{Role: string(provider.RoleAssistant), Content: res.Response.Content},
-			FinishReason: res.Response.FinishReason,
+			Message:      chatMessage{Role: string(provider.RoleAssistant), Content: resp.Content},
+			FinishReason: resp.FinishReason,
 		}},
 		Usage: chatUsage{
 			PromptTokens:     u.PromptTokens,
@@ -146,12 +214,20 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
-	// Responder sem streaming a quem pediu streaming quebraria o SDK sem um erro
-	// claro. Streaming entra na Fase 2.
-	if in.Stream {
-		return provider.ChatRequest{}, errors.New("stream ainda não é suportado")
+// setCost põe o custo no cabeçalho de custo; no streaming, ele vai como trailer,
+// declarado antes do corpo. O provedor já respondeu e cobrou: um erro de preço não
+// pode custar a resposta ao cliente. A carga da config impede que isso aconteça em
+// produção.
+func (s *Server) setCost(w http.ResponseWriter, providerName, model string, u provider.Usage) {
+	cost, err := s.prices.Cost(providerName, model, u)
+	if err != nil {
+		log.Printf("api: calculando custo: %v", err)
+		return
 	}
+	w.Header().Set(costHeader, strconv.FormatInt(int64(cost), 10))
+}
+
+func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
 	if in.Model == "" {
 		return provider.ChatRequest{}, errors.New("model é obrigatório")
 	}

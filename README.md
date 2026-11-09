@@ -6,10 +6,10 @@ Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
 provedores, com fallback, rate limiting, cache, contabilidade de custo e
 observabilidade.
 
-> **Estado:** Fase 1 de 5 concluída. O gateway já atende
-> `POST /v1/chat/completions` sem streaming, com fallback, circuit breaker e cálculo
-> de custo, usando o Ollama como provedor. Redis, Postgres, filas e os demais
-> provedores da arquitetura abaixo são o alvo, construído fase a fase.
+> **Estado:** Fase 2 de 5 concluída. O gateway atende `POST /v1/chat/completions`, com
+> e sem streaming, na frente do Ollama, da OpenAI e da Anthropic, com fallback, circuit
+> breaker, autenticação por chave de API, rate limit de pedidos e tokens, cache exato e
+> cálculo de custo. Observabilidade, filas e Kubernetes são o alvo das próximas fases.
 
 ## O alvo
 
@@ -44,33 +44,68 @@ decide quais provedores atendem, em que ordem.
 |---|---|---|
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
 | 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | concluída |
-| 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | — |
+| 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | concluída |
 | 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
 | 4 | Fila de uso e worker, `/v1/batches` | — |
 | 5 | Kubernetes com HPA pela fila | — |
 
 ## Rodando
 
-Requer Go 1.27, golangci-lint 2.x, Docker e o [Ollama](https://ollama.com/download).
+O caminho mais curto precisa só do Docker:
 
 ```
-ollama pull llama3.2
-cp config.example.json config.json
-make run
+make up    # gateway, Ollama com llama3.2, Postgres e Redis
+make down  # derruba; os dados do Postgres e o modelo ficam nos volumes
 ```
 
-Em outro terminal:
+Na primeira vez, `make up` baixa a imagem do Ollama e o modelo (alguns GB) e só
+termina depois que o modelo estiver pronto. As portas publicadas (gateway em 8080,
+Postgres em 5432, Redis em 6379) ficam presas em `127.0.0.1`. A config usada é
+[`deploy/config.compose.json`](deploy/config.compose.json).
+
+Todo pedido precisa de uma chave de API. Crie uma com o próprio binário (a chave só
+aparece nesta saída; o banco guarda só o hash):
 
 ```
-curl http://localhost:8080/v1/chat/completions -d '{
+docker compose -f deploy/docker-compose.yml exec gateway /gateway keys create -name eu
+docker compose -f deploy/docker-compose.yml exec gateway /gateway keys create -name outro -rpm 10 -tpm 5000
+docker compose -f deploy/docker-compose.yml exec gateway /gateway keys revoke -id 1
+```
+
+Cada chave tem um limite de pedidos e de tokens por minuto: os próprios (`-rpm`,
+`-tpm`) ou o padrão de `rate_limit` na config. Os tokens são reservados antes da
+chamada, pela estimativa da entrada mais o `max_tokens` (1024 se ausente), e acertados
+com o uso real depois. Acima do limite, a resposta é `429` com `Retry-After`; toda
+resposta traz os cabeçalhos `X-Ratelimit-*` no formato da OpenAI.
+
+Pedidos com `"temperature": 0` passam por um cache exato, separado por chave de API e
+válido pelo `cache.ttl` da config: um pedido idêntico volta do Redis, sem chamar o
+provedor e com custo zero. O cabeçalho `X-Llmux-Cache` diz `hit`, `miss` ou `bypass`.
+
+E use-a no cabeçalho `Authorization`:
+
+```
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer llmux_..." -d '{
   "model": "fast",
   "messages": [{"role": "user", "content": "Olá!"}]
 }'
 ```
 
-Com um SDK da OpenAI, troque só a `base_url` para `http://localhost:8080/v1`. A
-resposta traz o provedor e o custo em picodólares nos cabeçalhos `X-Llmux-Provider` e
-`X-Llmux-Cost-Picodollars`.
+Com um SDK da OpenAI, troque só a `base_url` para `http://localhost:8080/v1` e a
+`api_key` para a chave criada. A resposta traz o provedor e o custo em picodólares nos
+cabeçalhos `X-Llmux-Provider` e `X-Llmux-Cost-Picodollars`.
+
+Para desenvolver sem o gateway em container, com Go 1.27, golangci-lint 2.x e o
+[Ollama](https://ollama.com/download) na máquina:
+
+```
+ollama pull llama3.2
+cp config.example.json config.json
+docker compose -f deploy/docker-compose.yml up -d postgres redis
+go run ./cmd/gateway keys create -name eu   # com LLMUX_DATABASE_URL, como em make run
+make run
+```
 
 Outros comandos:
 
@@ -79,11 +114,13 @@ make              # lint, test e build: o mesmo que o CI roda
 make docker-build # gera a imagem llmux-gateway:dev
 ```
 
-Para rodar a imagem, monte a config. No Linux, com o Ollama na própria máquina:
+Para rodar a imagem fora do compose, monte a config e aponte o banco. No Linux, com o
+Ollama na própria máquina:
 
 ```
 docker run --rm --network host \
   -v "$PWD/config.json:/config.json:ro" -e LLMUX_CONFIG=/config.json \
+  -e LLMUX_DATABASE_URL='postgres://llmux:llmux@localhost:5432/llmux?sslmode=disable' \
   llmux-gateway:dev
 ```
 
@@ -93,19 +130,36 @@ Variáveis de ambiente:
 |---|---|---|
 | `LLMUX_ADDR` | `:8080` | endereço do servidor |
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
+| `LLMUX_DATABASE_URL` | — | obrigatória; o Postgres das chaves de API (`make run` usa o do compose) |
+| `LLMUX_REDIS_URL` | — | obrigatória; o Redis do rate limit (`make run` usa o do compose) |
+| `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
+| `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 
 O formato do arquivo está em [`config.example.json`](config.example.json). O gateway
 não sobe se uma rota não tiver preço ou provedor configurado.
 
 ## Limitações atuais
 
-- **Sem autenticação:** qualquer um que alcance o gateway pode usá-lo. Entra na Fase 2.
-- **Sem streaming:** `"stream": true` é recusado com `400`. Entra na Fase 2.
+- **Cache só sem streaming e com temperatura 0:** acima de zero, o cliente pede
+  variedade. Dois pedidos iguais ao mesmo tempo chamam o provedor duas vezes, porque
+  nenhum dos dois encontra a resposta do outro no cache.
+- **Rate limit falha aberto:** com o Redis fora do ar, os pedidos passam sem limite (e
+  o log avisa). Um stream interrompido mantém a reserva inteira, porque o uso real não
+  chegou.
+- **Chaves só pela linha de comando:** não há interface de administração (fora de
+  escopo). Cada pedido consulta o banco, sem cache, para uma revogação valer na hora.
+- **Stream interrompido não tem custo:** o uso só chega no fim do stream. No streaming,
+  o custo vai como trailer HTTP, que muitos clientes ignoram.
+- **OpenAI imitada pelo Ollama:** o adaptador da OpenAI funciona contra o `/v1` do Ollama,
+  mas o Ollama ignora `max_completion_tokens`, então o limite de tokens não vale ali.
+- **Anthropic sem `temperature`:** a versão `2026-10-21` da API recusa o campo com `400`,
+  então a temperatura do cliente não é repassada. Sem `max_tokens`, o gateway manda 16000,
+  porque a Anthropic exige o campo.
 - **Só mensagens de texto:** `content` como lista de partes e o papel `tool` são
   recusados, então os recursos de ferramentas dos SDKs não funcionam.
 - **Campos ignorados:** para os SDKs funcionarem, campos desconhecidos são aceitos e
   ignorados. Isso inclui `stop`, `top_p` e `seed`, que mudam a resposta.
-- **O custo não é guardado:** ele sai só no cabeçalho da resposta. A contabilidade
+- **O custo não é guardado:** ele sai só no cabeçalho (ou trailer) da resposta. A contabilidade
   entra com o Postgres e a fila de uso.
 - **Compatibilidade:** testada com `curl` e com o SDK oficial em Go.
 
@@ -116,12 +170,18 @@ Cada decisão relevante tem um ADR em [`docs/decisions/`](docs/decisions/).
 - [0001 — Imagem de runtime distroless](docs/decisions/0001-imagem-distroless.md)
 - [0002 — Precificação pelo modelo da rota](docs/decisions/0002-precificacao-pelo-modelo-da-rota.md)
 - [0003 — Fallback e circuit breaker](docs/decisions/0003-fallback-e-circuit-breaker.md)
+- [0004 — Rate limit com reserva e acerto](docs/decisions/0004-rate-limit-com-reserva-e-acerto.md)
 
 ## Custo
 
 O Ollama local é o provedor padrão de desenvolvimento. Uma chave paga com limite
 baixo serve só para provar que o gateway funciona com provedor real. Os testes
 usam um provedor falso: o núcleo é testável sem rede, sem chave e sem custo.
+
+Os adaptadores da OpenAI e da Anthropic foram testados contra o formato documentado
+de cada API (com `httptest`) e contra o Ollama, que imita as duas. Ainda não foram
+validados contra os provedores reais: uma imitação pode diferir em detalhes, como o
+formato dos erros. Postgres e Redis rodam de verdade nos testes, com testcontainers.
 
 ## O que ficou de fora e por quê
 

@@ -1,7 +1,10 @@
 IMAGE ?= llmux-gateway
 TAG   ?= dev
+# O Postgres do docker-compose, para make run; sobrescreva pelo ambiente.
+LLMUX_DATABASE_URL ?= postgres://llmux:llmux@localhost:5432/llmux?sslmode=disable
+LLMUX_REDIS_URL ?= redis://localhost:6379/0
 
-.PHONY: all build test lint run docker-build clean
+.PHONY: all build test lint run docker-build up down clean
 
 # all é o primeiro alvo para que `make` sem argumento rode o mesmo que o CI.
 all: lint test build
@@ -16,10 +19,18 @@ lint:
 	golangci-lint run
 
 run:
-	go run ./cmd/gateway
+	LLMUX_DATABASE_URL='$(LLMUX_DATABASE_URL)' LLMUX_REDIS_URL='$(LLMUX_REDIS_URL)' go run ./cmd/gateway
 
 docker-build:
 	docker build -t $(IMAGE):$(TAG) .
+
+# --build porque o gateway é código deste repositório: sem ele, o compose usaria
+# a imagem da última vez e ignoraria as mudanças.
+up:
+	docker compose -f deploy/docker-compose.yml up --build -d
+
+down:
+	docker compose -f deploy/docker-compose.yml down
 
 clean:
 	rm -rf bin/ coverage.out

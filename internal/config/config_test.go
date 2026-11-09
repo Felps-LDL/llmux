@@ -13,6 +13,8 @@ import (
 const valid = `{
         "attempt_timeout": "30s",
         "breaker": {"threshold": 5, "cooldown": "1m"},
+        "rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},
+        "cache": {"ttl": "1h"},
         "models": {"fast": [{"provider": "ollama", "model": "m"}]},
         "prices": [{"provider": "ollama", "model": "m", "input_per_million": 0, "output_per_million": 0}],
         "providers": {"ollama": {"base_url": "http://localhost:11434"}}
@@ -41,6 +43,14 @@ func TestLoadAceitaConfigValida(t *testing.T) {
 		t.Errorf("BreakerCooldown = %v, want %v", cfg.BreakerCooldown, time.Minute)
 	}
 
+	if want := (config.RateLimit{RequestsPerMinute: 60, TokensPerMinute: 100000}); cfg.RateLimit != want {
+		t.Errorf("RateLimit = %+v, want %+v", cfg.RateLimit, want)
+	}
+
+	if cfg.CacheTTL != time.Hour {
+		t.Errorf("CacheTTL = %v, want %v", cfg.CacheTTL, time.Hour)
+	}
+
 	if got := cfg.Providers["ollama"].BaseURL; got != "http://localhost:11434" {
 		t.Errorf("BaseURL = %q, want %q", got, "http://localhost:11434")
 	}
@@ -65,6 +75,10 @@ func TestLoadRecusaConfigInvalida(t *testing.T) {
 		{name: "modelo sem rotas", old: `[{"provider": "ollama", "model": "m"}]`, new: `[]`, want: "não tem rotas"},
 		{name: "provedor não configurado", old: `"providers": {"ollama": {"base_url": "http://localhost:11434"}}`, new: `"providers": {}`, want: "não está em providers"},
 		{name: "provedor sem base_url", old: `"http://localhost:11434"`, new: `""`, want: "base_url"},
+		{name: "sem rate_limit", old: `"rate_limit": {"requests_per_minute": 60, "tokens_per_minute": 100000},`, new: ``, want: "rate_limit"},
+		{name: "sem cache", old: `"cache": {"ttl": "1h"},`, new: ``, want: "cache.ttl"},
+		{name: "ttl zero", old: `"ttl": "1h"`, new: `"ttl": "0s"`, want: "cache.ttl"},
+		{name: "tokens por minuto zero", old: `"tokens_per_minute": 100000`, new: `"tokens_per_minute": 0`, want: "rate_limit"},
 	}
 
 	for _, tt := range tests {
