@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/Felps-LDL/llmux/internal/telemetry"
 )
 
@@ -97,6 +100,15 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 				attrs = append(attrs, slog.String(a.k, a.v))
 			}
 		}
+
+		// Os mesmos campos no span do pedido, para o trace ser filtrável por chave,
+		// modelo ou provedor no Jaeger, como o log é.
+		trace.SpanFromContext(r.Context()).SetAttributes(
+			attribute.Int64("llmux.key_id", info.keyID),
+			attribute.String("llmux.model", info.model),
+			attribute.String("llmux.provider", info.provider),
+			attribute.String("llmux.cache", info.cache),
+		)
 
 		level := slog.LevelInfo
 		if status >= http.StatusInternalServerError {

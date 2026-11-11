@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/Felps-LDL/llmux/internal/cache"
 	"github.com/Felps-LDL/llmux/internal/provider"
@@ -70,9 +71,22 @@ func (s *Server) Handler() http.Handler {
 	// de alguém lembrar do middleware.
 	r.Group(func(r chi.Router) {
 		r.Use(s.authenticate)
-		r.Post("/v1/chat/completions", s.chatCompletions)
+		r.Post(chatPath, s.chatCompletions)
 	})
-	return r
+	// Por fora de tudo, para o id, o access log e a autenticação ficarem dentro do
+	// trace. O traceparent de quem chama é lido aqui.
+	return otelhttp.NewHandler(r, "http.server", otelhttp.WithSpanNameFormatter(spanName))
+}
+
+const chatPath = "/v1/chat/completions"
+
+// spanName dá nome ao span do pedido. As ferramentas de trace agrupam por nome, e o
+// caminho cru criaria um nome por URL inventada: só as rotas conhecidas dão nome.
+func spanName(_ string, r *http.Request) string {
+	if r.URL.Path == chatPath {
+		return r.Method + " " + chatPath
+	}
+	return r.Method + " rota desconhecida"
 }
 
 type chatMessage struct {

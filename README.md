@@ -146,6 +146,9 @@ Variáveis de ambiente:
 | `LLMUX_REDIS_URL` | — | obrigatória; o Redis do rate limit (`make run` usa o do compose) |
 | `LLMUX_LOG_LEVEL` | `info` | `debug`, `info`, `warn` ou `error` |
 | `LLMUX_METRICS_ADDR` | `:2112` | endereço do `/metrics` do Prometheus, separado da API |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | coletor OTLP/HTTP dos traces; sem ela, o tracing fica desligado |
+| `OTEL_SERVICE_NAME` | `llmux-gateway` | nome do serviço nos traces |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | amostragem, pelas variáveis padrão do OpenTelemetry |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 | `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 

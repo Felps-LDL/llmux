@@ -251,6 +251,20 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return runKeys(args[1:], s, stdout)
 	}
 
+	shutdownTracing, err := telemetry.SetupTracing(context.Background(), getenv)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Um contexto novo, como no Shutdown do servidor: os últimos spans ainda estão
+		// no buffer do batcher e precisam sair antes de o processo terminar.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(ctx); err != nil {
+			slog.Warn("enviando os últimos spans", "error", err)
+		}
+	}()
+
 	cfg, err := loadConfig(s.ConfigPath)
 	if err != nil {
 		return err

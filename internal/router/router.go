@@ -8,6 +8,11 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/Felps-LDL/llmux/internal/provider"
 )
 
@@ -134,7 +139,7 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 			continue
 		}
 
-		err := try(route, br)
+		err := r.tracedTry(ctx, route, br, try)
 		if err == nil {
 			return nil
 		}
@@ -150,6 +155,28 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 	}
 
 	return fmt.Errorf("router: modelo %q: todos os provedores falharam: %w", model, errors.Join(failures...))
+}
+
+// tracedTry envolve uma tentativa num span, para o cronograma do pedido mostrar
+// quanto tempo cada provedor levou e qual falhou. No streaming, o span termina no
+// primeiro pedaço, que é quando a tentativa é decidida.
+func (r *Router) tracedTry(ctx context.Context, route Route, br *breaker, try func(Route, *breaker) error) error {
+	// O tracer vem do provedor global a cada chamada, e não de uma variável de pacote:
+	// sem tracing configurado, é o padrão da API, que não faz nada, e o router não sabe
+	// para onde os spans vão. Buscado na hora, ele segue o provedor atual mesmo quando
+	// um teste troca o global.
+	_, span := otel.Tracer("github.com/Felps-LDL/llmux/internal/router").Start(ctx, "router.attempt", trace.WithAttributes(
+		attribute.String("llmux.provider", route.Provider.Name()),
+		attribute.String("llmux.model", route.Model),
+	))
+	defer span.End()
+
+	err := try(route, br)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
 }
 
 // attempt existe para o defer liberar o timer a cada tentativa; dentro do loop de

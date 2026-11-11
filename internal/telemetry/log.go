@@ -6,6 +6,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 type requestIDKey struct{}
@@ -32,6 +34,11 @@ type contextHandler struct {
 func (h contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if id := RequestID(ctx); id != "" {
 		r.AddAttrs(slog.String("request_id", id))
+	}
+	// O trace_id é a ponte entre o log e o trace: de uma linha de erro se chega ao
+	// cronograma do pedido no Jaeger, e do cronograma às linhas.
+	if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+		r.AddAttrs(slog.String("trace_id", sc.TraceID().String()))
 	}
 	return h.Handler.Handle(ctx, r)
 }
