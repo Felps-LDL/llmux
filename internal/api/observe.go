@@ -8,7 +8,9 @@ import (
 	"regexp"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Felps-LDL/llmux/internal/telemetry"
@@ -116,6 +118,23 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		}
 		slog.LogAttrs(r.Context(), level, "pedido", attrs...)
 	})
+}
+
+// startSpan abre um span filho do pedido. O tracer é buscado na hora, pelo mesmo
+// motivo do router: numa variável de pacote, ficaria preso ao primeiro provedor.
+func startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	return otel.Tracer("github.com/Felps-LDL/llmux/internal/api").Start(ctx, name, trace.WithAttributes(attrs...))
+}
+
+// endSpan fecha o span, marcando-o como erro se err não for nil. Um erro do Redis
+// marca o span mesmo quando o pedido segue sem rate limit ou sem cache: no
+// cronograma, fica visível que a proteção estava desligada.
+func endSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.End()
 }
 
 // statusWriter guarda o status que o handler escreveu.

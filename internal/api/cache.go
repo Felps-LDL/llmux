@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/Felps-LDL/llmux/internal/cache"
 	"github.com/Felps-LDL/llmux/internal/provider"
 )
@@ -39,7 +41,10 @@ func (s *Server) cacheKey(ctx context.Context, model string, req provider.ChatRe
 // cacheGet trata um erro do Redis como miss: o cache é otimização, não
 // autorização, e uma queda dele não pode derrubar o pedido.
 func (s *Server) cacheGet(ctx context.Context, key string) (cache.Entry, bool) {
+	ctx, span := startSpan(ctx, "cache.get")
 	entry, ok, err := s.cache.Get(ctx, key)
+	span.SetAttributes(attribute.Bool("llmux.cache.hit", ok))
+	endSpan(span, err)
 	if err != nil {
 		slog.WarnContext(ctx, "lendo cache", "error", err)
 		return cache.Entry{}, false

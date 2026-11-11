@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/Felps-LDL/llmux/internal/store"
 )
 
@@ -27,7 +29,16 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			return
 		}
 
-		key, err := s.keys.LookupKey(r.Context(), secret)
+		ctx, span := startSpan(r.Context(), "auth.lookup_key")
+		key, err := s.keys.LookupKey(ctx, secret)
+		// Uma chave errada é erro do cliente, e não do sistema: vira atributo. Só uma
+		// falha do banco marca o span como erro.
+		span.SetAttributes(attribute.Bool("llmux.auth.valid", err == nil))
+		if errors.Is(err, store.ErrKeyNotFound) {
+			endSpan(span, nil)
+		} else {
+			endSpan(span, err)
+		}
 		switch {
 		case errors.Is(err, store.ErrKeyNotFound):
 			writeUnauthorized(w)

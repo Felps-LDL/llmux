@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/store"
@@ -76,7 +78,10 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request, req provider.Ch
 	key := keyFrom(r.Context())
 	limits := s.limitsFor(key)
 
-	d, err := s.limiter.Reserve(r.Context(), key.ID, limits, estimateTokens(req))
+	ctx, span := startSpan(r.Context(), "ratelimit.reserve")
+	d, err := s.limiter.Reserve(ctx, key.ID, limits, estimateTokens(req))
+	span.SetAttributes(attribute.Bool("llmux.ratelimit.allowed", err != nil || d.Allowed))
+	endSpan(span, err)
 	if err != nil {
 		// Fail open: o rate limit protege o sistema, mas não autoriza ninguém (a
 		// autenticação já passou). Uma queda do Redis não pode derrubar o produto.

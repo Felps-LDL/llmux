@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Felps-LDL/llmux/internal/api"
 	"github.com/Felps-LDL/llmux/internal/cache"
@@ -162,19 +164,19 @@ func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router
 	for name, p := range cfg.Providers {
 		switch name {
 		case "ollama":
-			providers[name] = ollama.New(p.BaseURL, &http.Client{})
+			providers[name] = ollama.New(p.BaseURL, newProviderClient())
 		case "openai":
 			key, err := apiKey(getenv, name, openAIKeyEnv)
 			if err != nil {
 				return nil, err
 			}
-			providers[name] = openai.New(p.BaseURL, key, &http.Client{})
+			providers[name] = openai.New(p.BaseURL, key, newProviderClient())
 		case "anthropic":
 			key, err := apiKey(getenv, name, anthropicKeyEnv)
 			if err != nil {
 				return nil, err
 			}
-			providers[name] = anthropic.New(p.BaseURL, key, &http.Client{})
+			providers[name] = anthropic.New(p.BaseURL, key, newProviderClient())
 		default:
 			return nil, fmt.Errorf("provedor %q não é suportado", name)
 		}
@@ -191,6 +193,16 @@ func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router
 		Threshold: cfg.BreakerThreshold,
 		Cooldown:  cfg.BreakerCooldown,
 	}), nil
+}
+
+// newProviderClient cria o cliente HTTP dos adaptadores, com um span por chamada.
+// Sem Timeout, pelo motivo documentado nos adaptadores: o prazo vem do contexto.
+// O propagador vazio impede o traceparent de sair: os provedores são terceiros, e o
+// id do nosso trace não serve para eles e revela ids internos.
+func newProviderClient() *http.Client {
+	return &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport,
+		otelhttp.WithPropagators(propagation.NewCompositeTextMapPropagator()),
+	)}
 }
 
 // apiKey lê a chave de um provedor pago. Sem ela, o gateway não sobe: senão cada

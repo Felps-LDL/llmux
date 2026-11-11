@@ -103,7 +103,7 @@ func (r *Router) HasModel(model string) bool {
 // req.Model é ignorado: cada rota define o nome físico.
 func (r *Router) Chat(ctx context.Context, model string, req provider.ChatRequest) (*Result, error) {
 	var res *Result
-	err := r.fallback(ctx, model, func(route Route, br *breaker) error {
+	err := r.fallback(ctx, model, func(ctx context.Context, route Route, br *breaker) error {
 		req.Model = route.Model
 		resp, err := r.attempt(ctx, route, req)
 		record(ctx, br, err)
@@ -117,8 +117,10 @@ func (r *Router) Chat(ctx context.Context, model string, req provider.ChatReques
 
 // fallback tenta as rotas de model em ordem até try ter sucesso. try recebe a rota
 // e o breaker dela e é quem informa o resultado ao breaker, porque no streaming o
-// veredito só sai no fim do stream, depois de fallback já ter retornado.
-func (r *Router) fallback(ctx context.Context, model string, try func(Route, *breaker) error) error {
+// veredito só sai no fim do stream, depois de fallback já ter retornado. try recebe
+// também o contexto da tentativa, que carrega o span dela: com o contexto de fora,
+// a chamada ao provedor apareceria no trace fora da tentativa a que pertence.
+func (r *Router) fallback(ctx context.Context, model string, try func(context.Context, Route, *breaker) error) error {
 	routes := r.routes[model]
 	if len(routes) == 0 {
 		return fmt.Errorf("%w: %q", ErrUnknownModel, model)
@@ -160,18 +162,18 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 // tracedTry envolve uma tentativa num span, para o cronograma do pedido mostrar
 // quanto tempo cada provedor levou e qual falhou. No streaming, o span termina no
 // primeiro pedaço, que é quando a tentativa é decidida.
-func (r *Router) tracedTry(ctx context.Context, route Route, br *breaker, try func(Route, *breaker) error) error {
+func (r *Router) tracedTry(ctx context.Context, route Route, br *breaker, try func(context.Context, Route, *breaker) error) error {
 	// O tracer vem do provedor global a cada chamada, e não de uma variável de pacote:
 	// sem tracing configurado, é o padrão da API, que não faz nada, e o router não sabe
 	// para onde os spans vão. Buscado na hora, ele segue o provedor atual mesmo quando
 	// um teste troca o global.
-	_, span := otel.Tracer("github.com/Felps-LDL/llmux/internal/router").Start(ctx, "router.attempt", trace.WithAttributes(
+	ctx, span := otel.Tracer("github.com/Felps-LDL/llmux/internal/router").Start(ctx, "router.attempt", trace.WithAttributes(
 		attribute.String("llmux.provider", route.Provider.Name()),
 		attribute.String("llmux.model", route.Model),
 	))
 	defer span.End()
 
-	err := try(route, br)
+	err := try(ctx, route, br)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
