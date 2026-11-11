@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/store"
+	"github.com/Felps-LDL/llmux/internal/telemetry"
 )
 
 const (
@@ -59,6 +61,7 @@ type settings struct {
 	ConfigPath  string
 	DatabaseURL string
 	RedisURL    string
+	LogLevel    string
 }
 
 // getenv é injetado para o teste fornecer um ambiente falso sem mexer no
@@ -73,13 +76,28 @@ func loadSettings(getenv func(string) string) settings {
 	}
 	s.DatabaseURL = getenv(databaseURLEnv)
 	s.RedisURL = getenv(redisURLEnv)
+	s.LogLevel = getenv("LLMUX_LOG_LEVEL")
 	return s
+}
+
+// setupLogger troca o logger padrão do processo pelo JSON do gateway. É o padrão, e
+// não um logger passado de função em função, porque o request_id viaja no contexto:
+// qualquer camada chama slog.InfoContext e a linha sai com o id.
+func setupLogger(level string, w io.Writer) error {
+	var l slog.Level // o zero é Info
+	if level != "" {
+		if err := l.UnmarshalText([]byte(level)); err != nil {
+			return fmt.Errorf("LLMUX_LOG_LEVEL inválido (use debug, info, warn ou error): %w", err)
+		}
+	}
+	slog.SetDefault(telemetry.NewLogger(w, l))
+	return nil
 }
 
 // openRedis cria o cliente do rate limit. A variável ausente é erro de
 // configuração e impede a subida; o Redis fora do ar, não: o rate limit falha
 // aberto (ver api.Server.reserve), e subir sem ele é melhor que não subir.
-func openRedis(redisURL string, stdout io.Writer) (*redis.Client, error) {
+func openRedis(redisURL string) (*redis.Client, error) {
 	if redisURL == "" {
 		return nil, fmt.Errorf("a variável %s é obrigatória", redisURLEnv)
 	}
@@ -92,8 +110,7 @@ func openRedis(redisURL string, stdout io.Writer) (*redis.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectTimeout)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		// Escrito na saída, e não só num log, para quem sobe o gateway ver na hora.
-		_, _ = fmt.Fprintf(stdout, "aviso: Redis indisponível, rate limit desligado até ele voltar: %v\n", err)
+		slog.Warn("Redis indisponível, rate limit e cache desligados até ele voltar", "error", err)
 	}
 	return rdb, nil
 }
@@ -219,6 +236,9 @@ func serve(ctx context.Context, ln net.Listener, handler http.Handler) error {
 // argumentos sem o nome do programa.
 func run(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
 	s := loadSettings(getenv)
+	if err := setupLogger(s.LogLevel, stdout); err != nil {
+		return err
+	}
 	if len(args) > 0 && args[0] == "keys" {
 		return runKeys(args[1:], s, stdout)
 	}
@@ -236,7 +256,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return err
 	}
 	defer pool.Close()
-	rdb, err := openRedis(s.RedisURL, stdout)
+	rdb, err := openRedis(s.RedisURL)
 	if err != nil {
 		return err
 	}
@@ -248,10 +268,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 	if err != nil {
 		return fmt.Errorf("abrindo porta: %w", err)
 	}
-	if _, err := fmt.Fprintf(stdout, "llmux gateway: addr=%s\n", ln.Addr()); err != nil {
-		_ = ln.Close()
-		return fmt.Errorf("escrevendo saída: %w", err)
-	}
+	slog.Info("gateway no ar", "addr", ln.Addr().String())
 
 	return serve(ctx, ln, api.New(api.Options{
 		Router:  r,

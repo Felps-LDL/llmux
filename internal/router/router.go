@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Felps-LDL/llmux/internal/provider"
@@ -98,6 +99,7 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 
 		br := r.breakers[route.Provider.Name()]
 		if !br.allow() {
+			slog.WarnContext(ctx, "circuito aberto, rota pulada", "provider", route.Provider.Name(), "model", model)
 			failures = append(failures, fmt.Errorf("%s: %w", route.Provider.Name(), ErrCircuitOpen))
 			continue
 		}
@@ -111,6 +113,9 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 		if !shouldFallback(err) {
 			return fmt.Errorf("router: modelo %q: %w", model, err)
 		}
+		// Sem este registro, um pedido atendido pela segunda rota pareceria normal, e
+		// um provedor caindo o tempo todo passaria despercebido.
+		slog.WarnContext(ctx, "tentativa falhou, indo para a próxima rota", "provider", route.Provider.Name(), "model", model, "error", err)
 		failures = append(failures, err)
 	}
 

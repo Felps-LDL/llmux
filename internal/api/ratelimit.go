@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -80,7 +80,7 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request, req provider.Ch
 	if err != nil {
 		// Fail open: o rate limit protege o sistema, mas não autoriza ninguém (a
 		// autenticação já passou). Uma queda do Redis não pode derrubar o produto.
-		log.Printf("api: rate limit indisponível, pedido liberado: %v", err)
+		slog.WarnContext(r.Context(), "rate limit indisponível, pedido liberado", "error", err)
 		return reservation{}, true
 	}
 
@@ -111,6 +111,6 @@ func (res reservation) settle(ctx context.Context, used int) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()
 	if err := res.limiter.Settle(ctx, res.keyID, res.limits, res.reserved, used); err != nil {
-		log.Printf("api: acertando rate limit: %v", err)
+		slog.WarnContext(ctx, "acertando rate limit", "error", err)
 	}
 }

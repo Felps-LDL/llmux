@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -59,6 +59,9 @@ func New(o Options) *Server {
 // Handler devolve o http.Handler com as rotas da API.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
+	// O id vem antes do access log, para a linha do pedido levar o id; e os dois
+	// valem para todas as rotas, inclusive as que a autenticação recusa.
+	r.Use(requestID, accessLog)
 	// Num grupo, para toda rota nova sob /v1 nascer protegida, em vez de depender
 	// de alguém lembrar do middleware.
 	r.Group(func(r chi.Router) {
@@ -144,13 +147,16 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	info := infoFrom(r.Context())
+	info.model = in.Model
+
 	rsv, ok := s.reserve(w, r, req)
 	if !ok {
 		return
 	}
 
 	if in.Stream {
-		w.Header().Set(cacheHeader, "bypass")
+		info.setCache(w, "bypass")
 		s.streamCompletions(w, r, in, req, rsv)
 		return
 	}
@@ -161,15 +167,16 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// O provedor não foi chamado: os tokens reservados voltam inteiros, e o
 			// custo deste pedido é zero.
 			rsv.settle(r.Context(), 0)
-			w.Header().Set(cacheHeader, "hit")
+			info.setCache(w, "hit")
 			w.Header().Set(costHeader, "0")
 			w.Header().Set("X-Llmux-Provider", entry.Provider)
+			info.provider = entry.Provider
 			writeCompletion(w, in.Model, entry.Response)
 			return
 		}
-		w.Header().Set(cacheHeader, "miss")
+		info.setCache(w, "miss")
 	} else {
-		w.Header().Set(cacheHeader, "bypass")
+		info.setCache(w, "bypass")
 	}
 
 	res, err := s.router.Chat(r.Context(), in.Model, req)
@@ -181,8 +188,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	rsv.settle(r.Context(), res.Response.Usage.PromptTokens+res.Response.Usage.CompletionTokens)
 
-	s.setCost(w, res.Provider, res.Model, res.Response.Usage)
+	s.setCost(r.Context(), w, res.Provider, res.Model, res.Response.Usage)
 	w.Header().Set("X-Llmux-Provider", res.Provider)
+	info.provider = res.Provider
 	writeCompletion(w, in.Model, *res.Response)
 
 	// Depois de responder: o cliente não precisa esperar a gravação.
@@ -218,10 +226,10 @@ func writeCompletion(w http.ResponseWriter, model string, resp provider.ChatResp
 // declarado antes do corpo. O provedor já respondeu e cobrou: um erro de preço não
 // pode custar a resposta ao cliente. A carga da config impede que isso aconteça em
 // produção.
-func (s *Server) setCost(w http.ResponseWriter, providerName, model string, u provider.Usage) {
+func (s *Server) setCost(ctx context.Context, w http.ResponseWriter, providerName, model string, u provider.Usage) {
 	cost, err := s.prices.Cost(providerName, model, u)
 	if err != nil {
-		log.Printf("api: calculando custo: %v", err)
+		slog.ErrorContext(ctx, "calculando custo", "error", err)
 		return
 	}
 	w.Header().Set(costHeader, strconv.FormatInt(int64(cost), 10))
@@ -270,7 +278,7 @@ func writeRouterError(ctx context.Context, w http.ResponseWriter, model string, 
 		return
 	}
 
-	log.Printf("api: modelo %q: %v", model, err)
+	slog.WarnContext(ctx, "nenhum provedor atendeu", "error", err)
 
 	switch {
 	case errors.Is(err, router.ErrUnknownModel):
@@ -298,6 +306,8 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("api: escrevendo resposta: %v", err)
+		// Sem contexto, e por isso sem request_id: writeJSON é chamada de muitos
+		// lugares, e uma falha de escrita quase sempre é o cliente que já saiu.
+		slog.Warn("escrevendo resposta", "error", err)
 	}
 }

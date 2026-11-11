@@ -2,7 +2,7 @@ package api
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Felps-LDL/llmux/internal/cache"
@@ -30,7 +30,7 @@ func (s *Server) cacheKey(ctx context.Context, model string, req provider.ChatRe
 	}
 	key, err := cache.Key(keyFrom(ctx).ID, model, req)
 	if err != nil {
-		log.Printf("api: cache desligado para o pedido: %v", err)
+		slog.WarnContext(ctx, "cache desligado para o pedido", "error", err)
 		return "", false
 	}
 	return key, true
@@ -41,7 +41,7 @@ func (s *Server) cacheKey(ctx context.Context, model string, req provider.ChatRe
 func (s *Server) cacheGet(ctx context.Context, key string) (cache.Entry, bool) {
 	entry, ok, err := s.cache.Get(ctx, key)
 	if err != nil {
-		log.Printf("api: lendo cache: %v", err)
+		slog.WarnContext(ctx, "lendo cache", "error", err)
 		return cache.Entry{}, false
 	}
 	return entry, ok
@@ -53,6 +53,6 @@ func (s *Server) cacheSet(ctx context.Context, key string, entry cache.Entry) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cacheSetTimeout)
 	defer cancel()
 	if err := s.cache.Set(ctx, key, entry); err != nil {
-		log.Printf("api: gravando cache: %v", err)
+		slog.WarnContext(ctx, "gravando cache", "error", err)
 	}
 }

@@ -1,12 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -52,6 +53,7 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	h.Set("X-Llmux-Provider", res.Provider)
+	infoFrom(r.Context()).provider = res.Provider
 	// O custo só é conhecido no fim, quando os cabeçalhos já saíram. Um trailer é um
 	// cabeçalho enviado depois do corpo, e precisa ser declarado antes dele.
 	h.Set("Trailer", costHeader)
@@ -74,8 +76,8 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 		if err != nil {
 			// Com o cliente fora, não há para quem escrever o erro.
 			if r.Context().Err() == nil {
-				log.Printf("api: modelo %q: stream interrompido: %v", in.Model, err)
-				writeStreamError(rc, w)
+				slog.WarnContext(r.Context(), "stream interrompido", "error", err)
+				writeStreamError(r.Context(), rc, w)
 			}
 			return
 		}
@@ -93,7 +95,7 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 		out := base
 		out.Choices = []chunkChoice{choice}
 		if err := writeEvent(rc, w, out); err != nil {
-			log.Printf("api: escrevendo stream: %v", err)
+			slog.WarnContext(r.Context(), "escrevendo stream", "error", err)
 			return
 		}
 	}
@@ -102,10 +104,10 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 		// Sem uso não há como cobrar; o log é o que permite notar um provedor assim.
 		// A reserva fica como está: sem o uso real, o mais seguro é cobrar o
 		// reservado.
-		log.Printf("api: modelo %q: stream sem uso, custo desconhecido", in.Model)
+		slog.WarnContext(r.Context(), "stream sem uso, custo desconhecido")
 	} else {
 		rsv.settle(r.Context(), u.PromptTokens+u.CompletionTokens)
-		s.setCost(w, res.Provider, res.Model, *u)
+		s.setCost(r.Context(), w, res.Provider, res.Model, *u)
 		if in.StreamOptions.IncludeUsage {
 			out := base
 			out.Choices = []chunkChoice{}
@@ -115,25 +117,25 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 				TotalTokens:      u.PromptTokens + u.CompletionTokens,
 			}
 			if err := writeEvent(rc, w, out); err != nil {
-				log.Printf("api: escrevendo stream: %v", err)
+				slog.WarnContext(r.Context(), "escrevendo stream", "error", err)
 				return
 			}
 		}
 	}
 
 	if err := writeData(rc, w, []byte("[DONE]")); err != nil {
-		log.Printf("api: escrevendo stream: %v", err)
+		slog.WarnContext(r.Context(), "escrevendo stream", "error", err)
 	}
 }
 
 // writeStreamError não traz o detalhe do erro pelo mesmo motivo de writeRouterError.
 // Sem o [DONE] depois dele, o cliente também sabe que a resposta não terminou.
-func writeStreamError(rc *http.ResponseController, w io.Writer) {
+func writeStreamError(ctx context.Context, rc *http.ResponseController, w io.Writer) {
 	if err := writeEvent(rc, w, errorResponse{Error: errorDetail{
 		Message: "o provedor falhou no meio da resposta",
 		Type:    "server_error",
 	}}); err != nil {
-		log.Printf("api: escrevendo stream: %v", err)
+		slog.WarnContext(ctx, "escrevendo stream", "error", err)
 	}
 }
 

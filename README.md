@@ -82,6 +82,11 @@ Pedidos com `"temperature": 0` passam por um cache exato, separado por chave de 
 válido pelo `cache.ttl` da config: um pedido idêntico volta do Redis, sem chamar o
 provedor e com custo zero. O cabeçalho `X-Llmux-Cache` diz `hit`, `miss` ou `bypass`.
 
+Os logs saem em JSON, uma linha por pedido, com status, duração, chave, modelo, provedor
+e cache, mas nunca o conteúdo da conversa nem a chave de API. Toda resposta traz um
+`X-Request-Id`, que liga as linhas de um mesmo pedido; o cliente pode mandar o próprio,
+de até 64 letras, números, `.`, `_` ou `-`, para cruzar os logs dele com os do gateway.
+
 E use-a no cabeçalho `Authorization`:
 
 ```
@@ -132,6 +137,7 @@ Variáveis de ambiente:
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
 | `LLMUX_DATABASE_URL` | — | obrigatória; o Postgres das chaves de API (`make run` usa o do compose) |
 | `LLMUX_REDIS_URL` | — | obrigatória; o Redis do rate limit (`make run` usa o do compose) |
+| `LLMUX_LOG_LEVEL` | `info` | `debug`, `info`, `warn` ou `error` |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 | `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 

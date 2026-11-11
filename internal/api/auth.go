@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -39,9 +39,10 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			// 503, e não 401: um 401 diria ao cliente que a chave é inválida, e ele
 			// poderia descartá-la por causa de um banco fora do ar. O detalhe fica no
 			// log; o segredo nunca vai para ele.
-			log.Printf("api: verificando chave: %v", err)
+			slog.ErrorContext(r.Context(), "verificando chave", "error", err)
 			writeError(w, http.StatusServiceUnavailable, "server_error", "não foi possível verificar a chave de API")
 		default:
+			infoFrom(r.Context()).keyID = key.ID
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), keyCtxKey{}, key)))
 		}
 	})

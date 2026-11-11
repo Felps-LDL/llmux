@@ -117,12 +117,13 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() erro inesperado: %v", err)
 	}
-	if !strings.Contains(out.String(), "rate limit desligado") {
+	if !strings.Contains(out.String(), "Redis indisponível") {
 		t.Errorf("saída = %q, want o aviso do Redis indisponível", out.String())
 	}
 
-	if !strings.Contains(out.String(), "addr=127.0.0.1:") {
-		t.Errorf("saída = %q, deveria conter %q", out.String(), "addr=127.0.0.1:")
+	// A saída é JSON: o endereço é um campo, e não um texto solto.
+	if !strings.Contains(out.String(), `"addr":"127.0.0.1:`) {
+		t.Errorf("saída = %q, deveria conter o campo addr", out.String())
 	}
 }
 
