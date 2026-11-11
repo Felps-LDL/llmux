@@ -18,13 +18,12 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **2** (código concluído na branch `fase-2`; falta o PR com CI verde e as perguntas)
-Última coisa concluída: Fase 2 inteira — streaming, adaptadores da OpenAI e da Anthropic
-(provados contra o Ollama, que imita as duas APIs), docker-compose, Postgres com migrations
-e testcontainers, autenticação por chave, rate limit com reserva e acerto (ADR 0004) e cache
-exato. A pedido do Felipe, Claude escreve o código e as mensagens de commit; ele revisa e
-responde perguntas de cenário. Pendentes para o fechamento: as perguntas de cenário que
-ficaram sem resposta durante a fase e as cinco de entrevista.
+Fase: **3** (iniciada na branch `fase-3`; primeiro componente: slog com request_id)
+Última coisa concluída: Fase 2 fechada no PR #3 (streaming, adaptadores da OpenAI e da
+Anthropic, Postgres com migrations, autenticação, rate limit com reserva e acerto, cache
+exato, ADR 0004). CI verde, inclusive com testcontainers no GitHub. Perguntas de fechamento
+respondidas depois de revisão. Por decisão do Felipe, nas Fases 2 e 3 Claude escreve o
+código e as mensagens de commit; ele revisa e responde perguntas de cenário.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
