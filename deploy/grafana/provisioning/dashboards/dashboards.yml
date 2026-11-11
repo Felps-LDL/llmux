@@ -1,0 +1,7 @@
+# O dashboard é um JSON versionado em deploy/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: llmux
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

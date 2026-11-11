@@ -1,0 +1,14 @@
+# As fontes de dados vêm por arquivo, e não por cliques: um make up numa máquina
+# nova já tem o Prometheus e o Jaeger configurados. Os uid fixos são o que o
+# dashboard referencia.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    url: http://jaeger:16686

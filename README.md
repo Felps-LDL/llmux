@@ -94,6 +94,20 @@ custos e ids de chave. No compose, ela fica presa em `127.0.0.1`:
 curl localhost:2112/metrics | grep ^llm_
 ```
 
+### Observabilidade
+
+O `make up` também sobe o Prometheus, o Jaeger e o Grafana, já configurados:
+
+| O quê | Onde | Para quê |
+|---|---|---|
+| Grafana | <http://localhost:3000> | O painel do llmux abre direto, sem login (para editar: `admin`/`admin`) |
+| Jaeger | <http://localhost:16686> | O cronograma de cada pedido: escolha o serviço `llmux-gateway` |
+| Prometheus | <http://localhost:9090> | As séries cruas, para consultas em PromQL |
+
+O painel e as fontes de dados são arquivos versionados em
+[`deploy/grafana/`](deploy/grafana/). Toda linha de log tem o `trace_id`, que abre o
+mesmo pedido no Jaeger.
+
 E use-a no cabeçalho `Authorization`:
 
 ```

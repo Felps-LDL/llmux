@@ -1,0 +1,10 @@
+# Lê as métricas do gateway pela rede interna do compose, na porta própria delas.
+global:
+  # 5 s para o painel reagir rápido numa demonstração local; em produção, 15 s ou
+  # 30 s bastam e custam menos armazenamento.
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: llmux
+    static_configs:
+      - targets: ["gateway:2112"]

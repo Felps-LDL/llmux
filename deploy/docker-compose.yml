@@ -13,6 +13,9 @@ services:
       # sslmode=disable só porque o tráfego não sai da rede interna do compose.
       LLMUX_DATABASE_URL: postgres://llmux:${POSTGRES_PASSWORD:-llmux}@postgres:5432/llmux?sslmode=disable
       LLMUX_REDIS_URL: redis://redis:6379/0
+      # Sem depends_on no Jaeger: observabilidade é ferramenta de quem opera e não
+      # pode impedir o gateway de subir. Com o Jaeger fora, só os traces se perdem.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     volumes:
       - ./config.compose.json:/config.json:ro
     ports:
@@ -90,6 +93,37 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  # O all-in-one guarda os traces na memória: some num restart, o que basta para
+  # desenvolver. Em produção, ele teria um banco por trás.
+  jaeger:
+    image: jaegertracing/jaeger:2.20.0
+    ports:
+      - "127.0.0.1:16686:16686"
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    environment:
+      # Leitura sem login, só porque a porta está presa em 127.0.0.1; para editar,
+      # entre com admin/admin.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/llmux.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
 
 volumes:
   ollama-models:
