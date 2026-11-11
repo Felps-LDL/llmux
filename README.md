@@ -160,6 +160,9 @@ não sobe se uma rota não tiver preço ou provedor configurado.
 - **Rate limit falha aberto:** com o Redis fora do ar, os pedidos passam sem limite (e
   o log avisa). Um stream interrompido mantém a reserva inteira, porque o uso real não
   chegou.
+- **Custo por chave nas métricas:** `llm_cost_usd_total` tem o id da chave como rótulo, e
+  cada chave multiplica as séries do Prometheus. Serve para centenas ou poucos milhares de
+  chaves; acima disso, o custo por chave pertence ao Postgres, com a fila de uso da Fase 4.
 - **Chaves só pela linha de comando:** não há interface de administração (fora de
   escopo). Cada pedido consulta o banco, sem cache, para uma revogação valer na hora.
 - **Stream interrompido não tem custo:** o uso só chega no fim do stream. No streaming,

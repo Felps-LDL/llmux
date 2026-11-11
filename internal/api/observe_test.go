@@ -16,6 +16,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/provider/fake"
 	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/telemetry"
+	"github.com/Felps-LDL/llmux/internal/usage"
 )
 
 // captureLogs troca o logger padrão por um que escreve num buffer, e o devolve no
@@ -208,6 +209,61 @@ func TestMetricasNaoUsamModeloDesconhecidoComoRotulo(t *testing.T) {
 		t.Errorf("/metrics tem um nome do cliente como rótulo:\n%s", body)
 	}
 	if want := `llm_requests_total{model="unknown",provider="none",status="404"} 2`; !strings.Contains(body, want) {
+		t.Errorf("/metrics sem %q", want)
+	}
+}
+
+func scrapeText(t *testing.T, m *telemetry.Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+// Verifica onde cada métrica de uso é medida, pelo caminho real. Os tokens e o custo
+// contam o que o provedor cobrou: uma resposta normal e um stream contam; um acerto
+// do cache não, porque o provedor não foi chamado, e conta só em llm_cache_hits_total.
+// O tempo até o primeiro token só existe no streaming.
+func TestMetricasDeUsoContamSoOQueOProvedorCobrou(t *testing.T) {
+	a := fake.New("a",
+		fake.Reply(provider.ChatResponse{Content: "olá", Usage: provider.Usage{PromptTokens: 1000, CompletionTokens: 500}}),
+		fake.StreamReply(
+			provider.StreamChunk{Content: "o"},
+			provider.StreamChunk{FinishReason: "stop", Usage: &provider.Usage{PromptTokens: 10, CompletionTokens: 20}},
+		),
+	)
+	m := telemetry.NewMetrics(nil)
+	r := router.New(map[string][]router.Route{
+		"fast": {{Provider: a, Model: "modelo-fisico"}},
+	}, time.Second, router.BreakerConfig{Threshold: 100, Cooldown: time.Minute})
+	h := api.New(api.Options{
+		Router:  r,
+		Prices:  usage.PriceTable{{Provider: "a", Model: "modelo-fisico"}: {InputPerMillion: 150_000, OutputPerMillion: 600_000}},
+		Keys:    keys{testKey: {ID: 7}},
+		Cache:   newFakeCache(),
+		Metrics: m,
+	}).Handler()
+	cached := `{"model": "fast", "temperature": 0, "messages": [{"role": "user", "content": "oi"}]}`
+
+	post(t.Context(), t, h, cached) // miss: chama o provedor
+	post(t.Context(), t, h, cached) // acerto: não chama
+	post(t.Context(), t, h, `{"model": "fast", "stream": true, "messages": [{"role": "user", "content": "oi"}]}`)
+
+	out := scrapeText(t, m)
+	for _, want := range []string{
+		// 1000 + 10: o acerto do cache não somou outros 1000.
+		`llm_tokens_total{direction="input",provider="a"} 1010`,
+		`llm_tokens_total{direction="output",provider="a"} 520`,
+		`llm_cache_hits_total 1`,
+		`llm_time_to_first_token_seconds_count{provider="a"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/metrics sem %q", want)
+		}
+	}
+	// 1000 × 150.000 + 500 × 600.000 = 450.000.000, e 10 × 150.000 + 20 × 600.000 =
+	// 13.500.000 picodólares: 463.500.000 no total, ou US$ 0,0004635.
+	if want := `llm_cost_usd_total{api_key="7",model="modelo-fisico",provider="a"} 0.0004635`; !strings.Contains(out, want) {
 		t.Errorf("/metrics sem %q", want)
 	}
 }

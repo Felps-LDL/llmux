@@ -34,6 +34,9 @@ func requestID(next http.Handler) http.Handler {
 // numa linha só no fim. Cada campo é preenchido por quem o descobre: a chave pela
 // autenticação, o provedor pelo handler.
 type requestInfo struct {
+	// start é o início do pedido, para o tempo até o primeiro token contar desde a
+	// chegada, e não desde a chamada ao provedor: é o tempo que o usuário espera.
+	start    time.Time
 	keyID    int64
 	model    string
 	provider string
@@ -62,7 +65,7 @@ const statusClientClosed = 499
 func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		info := &requestInfo{}
+		info := &requestInfo{start: start}
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 
 		next.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), requestInfoKey{}, info)))

@@ -172,6 +172,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// custo deste pedido é zero.
 			rsv.settle(r.Context(), 0)
 			info.setCache(w, "hit")
+			s.metrics.CacheHit()
 			w.Header().Set(costHeader, "0")
 			w.Header().Set("X-Llmux-Provider", entry.Provider)
 			info.provider = entry.Provider
@@ -192,7 +193,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	rsv.settle(r.Context(), res.Response.Usage.PromptTokens+res.Response.Usage.CompletionTokens)
 
-	s.setCost(r.Context(), w, res.Provider, res.Model, res.Response.Usage)
+	s.recordUsage(r.Context(), w, res.Provider, res.Model, res.Response.Usage)
 	w.Header().Set("X-Llmux-Provider", res.Provider)
 	info.provider = res.Provider
 	writeCompletion(w, in.Model, *res.Response)
@@ -226,17 +227,18 @@ func writeCompletion(w http.ResponseWriter, model string, resp provider.ChatResp
 	})
 }
 
-// setCost põe o custo no cabeçalho de custo; no streaming, ele vai como trailer,
-// declarado antes do corpo. O provedor já respondeu e cobrou: um erro de preço não
-// pode custar a resposta ao cliente. A carga da config impede que isso aconteça em
-// produção.
-func (s *Server) setCost(ctx context.Context, w http.ResponseWriter, providerName, model string, u provider.Usage) {
+// recordUsage põe o custo no cabeçalho de custo (no streaming, ele vai como trailer,
+// declarado antes do corpo) e mede os tokens e o custo. O provedor já respondeu e
+// cobrou: um erro de preço não pode custar a resposta ao cliente. A carga da config
+// impede que isso aconteça em produção.
+func (s *Server) recordUsage(ctx context.Context, w http.ResponseWriter, providerName, model string, u provider.Usage) {
 	cost, err := s.prices.Cost(providerName, model, u)
 	if err != nil {
 		slog.ErrorContext(ctx, "calculando custo", "error", err)
 		return
 	}
 	w.Header().Set(costHeader, strconv.FormatInt(int64(cost), 10))
+	s.metrics.ObserveUsage(providerName, model, keyFrom(ctx).ID, u.PromptTokens, u.CompletionTokens, int64(cost))
 }
 
 func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {

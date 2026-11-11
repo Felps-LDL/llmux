@@ -81,3 +81,28 @@ func TestMetricsNilNaoFazNada(t *testing.T) {
 	var m *telemetry.Metrics
 	m.ObserveRequest("a", "b", 200, time.Second)
 }
+
+// Verifica as métricas de uso, com a conversão que é fácil de errar: o custo chega
+// em picodólares (10^-12 USD) e sai em dólares. 450.000.000 picodólares são
+// US$ 0,00045; um fator errado de mil passaria despercebido sem a conta à mão.
+func TestMetricsExpoeUsoCustoCacheETTFT(t *testing.T) {
+	m := telemetry.NewMetrics(nil)
+	m.ObserveUsage("openai", "gpt-x", 7, 1000, 500, 450_000_000)
+	m.CacheHit()
+	m.CacheHit()
+	m.ObserveTTFT("openai", 300*time.Millisecond)
+
+	out := scrape(t, m)
+	for _, want := range []string{
+		`llm_tokens_total{direction="input",provider="openai"} 1000`,
+		`llm_tokens_total{direction="output",provider="openai"} 500`,
+		`llm_cost_usd_total{api_key="7",model="gpt-x",provider="openai"} 0.00045`,
+		`llm_cache_hits_total 2`,
+		`llm_time_to_first_token_seconds_bucket{provider="openai",le="0.25"} 0`,
+		`llm_time_to_first_token_seconds_bucket{provider="openai",le="0.5"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("/metrics sem %q", want)
+		}
+	}
+}

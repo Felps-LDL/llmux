@@ -15,12 +15,20 @@ import (
 // cego justamente nos pedidos lentos.
 var latencyBuckets = []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 60, 120}
 
+// O primeiro token chega bem antes da resposta inteira, então os baldes começam
+// menores: a diferença entre 100 ms e 500 ms é o que o usuário sente.
+var ttftBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30}
+
 // Metrics guarda as métricas do gateway. Um valor nil é válido e não mede nada, para
 // os testes que não olham métricas não precisarem montar uma.
 type Metrics struct {
-	registry *prometheus.Registry
-	requests *prometheus.CounterVec
-	duration *prometheus.HistogramVec
+	registry  *prometheus.Registry
+	requests  *prometheus.CounterVec
+	duration  *prometheus.HistogramVec
+	ttft      *prometheus.HistogramVec
+	tokens    *prometheus.CounterVec
+	cost      *prometheus.CounterVec
+	cacheHits prometheus.Counter
 }
 
 // NewMetrics cria as métricas num registro próprio, e não no global do pacote: dois
@@ -41,10 +49,35 @@ func NewMetrics(circuits func() map[string]int) *Metrics {
 			Help:    "Duração dos pedidos, do primeiro byte recebido à resposta completa.",
 			Buckets: latencyBuckets,
 		}, []string{"provider", "model"}),
+		ttft: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "llm_time_to_first_token_seconds",
+			Help:    "Tempo até o primeiro pedaço de um stream chegar ao cliente.",
+			Buckets: ttftBuckets,
+		}, []string{"provider"}),
+		tokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "llm_tokens_total",
+			Help: "Tokens cobrados pelos provedores, por direção (input ou output).",
+		}, []string{"provider", "direction"}),
+		// O api_key multiplica as séries pelo número de chaves. Fica só num contador,
+		// nunca num histograma, e as chaves só crescem quando o operador cria uma:
+		// diferente do nome do modelo, que vem do cliente. Para dezenas de milhares
+		// de chaves, o custo por chave pertence ao Postgres (Fase 4).
+		cost: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "llm_cost_usd_total",
+			Help: "Custo em dólares, por provedor, modelo físico e id da chave de API.",
+		}, []string{"provider", "model", "api_key"}),
+		cacheHits: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "llm_cache_hits_total",
+			Help: "Pedidos respondidos pelo cache, sem chamar o provedor.",
+		}),
 	}
 	m.registry.MustRegister(
 		m.requests,
 		m.duration,
+		m.ttft,
+		m.tokens,
+		m.cost,
+		m.cacheHits,
 		circuitCollector{states: circuits},
 		// Memória, goroutines e GC do próprio processo: o básico para saber se o
 		// problema é o gateway, e não o provedor.
@@ -68,6 +101,33 @@ func (m *Metrics) ObserveRequest(provider, model string, status int, d time.Dura
 	provider, model = orNone(provider), orNone(model)
 	m.requests.WithLabelValues(provider, model, strconv.Itoa(status)).Inc()
 	m.duration.WithLabelValues(provider, model).Observe(d.Seconds())
+}
+
+// ObserveUsage registra os tokens e o custo de uma resposta de provedor. model é o
+// nome físico, o mesmo que define o preço (ADR 0002).
+func (m *Metrics) ObserveUsage(provider, model string, apiKeyID int64, input, output int, picodollars int64) {
+	if m == nil {
+		return
+	}
+	m.tokens.WithLabelValues(provider, "input").Add(float64(input))
+	m.tokens.WithLabelValues(provider, "output").Add(float64(output))
+	m.cost.WithLabelValues(provider, model, strconv.FormatInt(apiKeyID, 10)).Add(float64(picodollars) / 1e12)
+}
+
+// ObserveTTFT registra o tempo até o primeiro pedaço de um stream.
+func (m *Metrics) ObserveTTFT(provider string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.ttft.WithLabelValues(provider).Observe(d.Seconds())
+}
+
+// CacheHit registra um pedido respondido pelo cache.
+func (m *Metrics) CacheHit() {
+	if m == nil {
+		return
+	}
+	m.cacheHits.Inc()
 }
 
 func orNone(s string) string {

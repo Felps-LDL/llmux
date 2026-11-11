@@ -98,6 +98,9 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 			slog.WarnContext(r.Context(), "escrevendo stream", "error", err)
 			return
 		}
+		if first {
+			s.metrics.ObserveTTFT(res.Provider, time.Since(infoFrom(r.Context()).start))
+		}
 	}
 
 	if u == nil {
@@ -107,7 +110,7 @@ func (s *Server) streamCompletions(w http.ResponseWriter, r *http.Request, in ch
 		slog.WarnContext(r.Context(), "stream sem uso, custo desconhecido")
 	} else {
 		rsv.settle(r.Context(), u.PromptTokens+u.CompletionTokens)
-		s.setCost(r.Context(), w, res.Provider, res.Model, *u)
+		s.recordUsage(r.Context(), w, res.Provider, res.Model, *u)
 		if in.StreamOptions.IncludeUsage {
 			out := base
 			out.Choices = []chunkChoice{}
