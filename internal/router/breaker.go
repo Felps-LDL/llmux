@@ -99,6 +99,14 @@ func (b *breaker) release() {
 	}
 }
 
+// current devolve o estado sem mudá-lo. Um circuito aberto com o cooldown vencido
+// continua aberto até o próximo pedido o passar a meio-aberto.
+func (b *breaker) current() breakerState {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.state
+}
+
 // trip precisa ser chamado com a trava presa.
 func (b *breaker) trip() {
 	b.state = stateOpen

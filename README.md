@@ -87,6 +87,13 @@ e cache, mas nunca o conteúdo da conversa nem a chave de API. Toda resposta tra
 `X-Request-Id`, que liga as linhas de um mesmo pedido; o cliente pode mandar o próprio,
 de até 64 letras, números, `.`, `_` ou `-`, para cruzar os logs dele com os do gateway.
 
+As métricas do Prometheus ficam em `/metrics`, numa porta própria (2112), porque mostram
+custos e ids de chave. No compose, ela fica presa em `127.0.0.1`:
+
+```
+curl localhost:2112/metrics | grep ^llm_
+```
+
 E use-a no cabeçalho `Authorization`:
 
 ```
@@ -138,6 +145,7 @@ Variáveis de ambiente:
 | `LLMUX_DATABASE_URL` | — | obrigatória; o Postgres das chaves de API (`make run` usa o do compose) |
 | `LLMUX_REDIS_URL` | — | obrigatória; o Redis do rate limit (`make run` usa o do compose) |
 | `LLMUX_LOG_LEVEL` | `info` | `debug`, `info`, `warn` ou `error` |
+| `LLMUX_METRICS_ADDR` | `:2112` | endereço do `/metrics` do Prometheus, separado da API |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 | `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 

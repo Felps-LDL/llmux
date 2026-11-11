@@ -18,6 +18,7 @@ import (
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
+	"github.com/Felps-LDL/llmux/internal/telemetry"
 	"github.com/Felps-LDL/llmux/internal/usage"
 )
 
@@ -35,6 +36,7 @@ type Server struct {
 	limiter       Limiter
 	defaultLimits ratelimit.Limits
 	cache         ResponseCache
+	metrics       *telemetry.Metrics
 }
 
 // Options são as dependências do Server. Uma struct, e não argumentos, porque
@@ -49,11 +51,13 @@ type Options struct {
 	DefaultLimits ratelimit.Limits
 	// Cache nil desliga o cache de respostas.
 	Cache ResponseCache
+	// Metrics nil não mede nada.
+	Metrics *telemetry.Metrics
 }
 
 // New cria um Server.
 func New(o Options) *Server {
-	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits, cache: o.Cache}
+	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits, cache: o.Cache, metrics: o.Metrics}
 }
 
 // Handler devolve o http.Handler com as rotas da API.
@@ -61,7 +65,7 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	// O id vem antes do access log, para a linha do pedido levar o id; e os dois
 	// valem para todas as rotas, inclusive as que a autenticação recusa.
-	r.Use(requestID, accessLog)
+	r.Use(requestID, s.accessLog)
 	// Num grupo, para toda rota nova sob /v1 nascer protegida, em vez de depender
 	// de alguém lembrar do middleware.
 	r.Group(func(r chi.Router) {

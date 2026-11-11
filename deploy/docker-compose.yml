@@ -17,6 +17,8 @@ services:
       - ./config.compose.json:/config.json:ro
     ports:
       - "127.0.0.1:8080:8080"
+      # As métricas mostram custos e ids de chave: só nesta máquina.
+      - "127.0.0.1:2112:2112"
     depends_on:
       # Sem esperar o modelo, os primeiros pedidos falhariam com 404 do Ollama.
       ollama-pull:

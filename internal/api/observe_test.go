@@ -9,9 +9,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Felps-LDL/llmux/internal/api"
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/provider/fake"
+	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/telemetry"
 )
 
@@ -160,5 +163,51 @@ func TestAccessLogMarcaClienteQueDesistiuCom499(t *testing.T) {
 	lines := logLines(t, buf, "pedido")
 	if len(lines) != 1 || lines[0]["status"] != float64(499) {
 		t.Errorf("access log = %v, want status 499", lines)
+	}
+}
+
+// Verifica que o access log mede o pedido com os mesmos dados que escreve: o
+// provedor que atendeu e o modelo lógico. É o caminho real, do handler até o texto
+// que o Prometheus lê.
+func TestAccessLogMedePedidoNasMetricas(t *testing.T) {
+	a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	m := telemetry.NewMetrics(nil)
+	r := router.New(map[string][]router.Route{
+		"fast": {{Provider: a, Model: "modelo-fisico"}},
+	}, time.Second, router.BreakerConfig{Threshold: 100, Cooldown: time.Minute})
+	h := api.New(api.Options{Router: r, Keys: keys{testKey: {ID: 1}}, Metrics: m}).Handler()
+
+	post(t.Context(), t, h, `{"model": "fast", "messages": [{"role": "user", "content": "oi"}]}`)
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if want := `llm_requests_total{model="fast",provider="a",status="200"} 1`; !strings.Contains(rec.Body.String(), want) {
+		t.Errorf("/metrics sem %q", want)
+	}
+}
+
+// Um nome de modelo inventado pelo cliente não pode virar rótulo: cada nome seria uma
+// série nova no Prometheus, e um cliente com uma chave válida poderia criar milhões.
+// Todos os desconhecidos dividem a série "unknown".
+func TestMetricasNaoUsamModeloDesconhecidoComoRotulo(t *testing.T) {
+	a := fake.New("a", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	m := telemetry.NewMetrics(nil)
+	r := router.New(map[string][]router.Route{
+		"fast": {{Provider: a, Model: "modelo-fisico"}},
+	}, time.Second, router.BreakerConfig{Threshold: 100, Cooldown: time.Minute})
+	h := api.New(api.Options{Router: r, Keys: keys{testKey: {ID: 1}}, Metrics: m}).Handler()
+
+	for _, model := range []string{"inventado-1", "inventado-2"} {
+		post(t.Context(), t, h, `{"model": "`+model+`", "messages": [{"role": "user", "content": "oi"}]}`)
+	}
+
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "inventado") {
+		t.Errorf("/metrics tem um nome do cliente como rótulo:\n%s", body)
+	}
+	if want := `llm_requests_total{model="unknown",provider="none",status="404"} 2`; !strings.Contains(body, want) {
+		t.Errorf("/metrics sem %q", want)
 	}
 }

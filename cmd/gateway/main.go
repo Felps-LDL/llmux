@@ -31,8 +31,12 @@ import (
 )
 
 const (
-	defaultAddr       = ":8080"
-	defaultConfigPath = "config.json"
+	defaultAddr = ":8080"
+	// Porta própria para as métricas, fora da porta pública: elas mostram custos e
+	// ids de chave. 2112 é a do guia do client_golang; a 9090 é a do próprio
+	// Prometheus, que vai rodar ao lado no compose.
+	defaultMetricsAddr = ":2112"
+	defaultConfigPath  = "config.json"
 
 	// Sem limite para ler os cabeçalhos, clientes lentos prenderiam conexões abertas.
 	// Não há WriteTimeout porque ele cortaria uma resposta longa de um LLM; o prazo
@@ -58,6 +62,7 @@ const (
 
 type settings struct {
 	Addr        string
+	MetricsAddr string
 	ConfigPath  string
 	DatabaseURL string
 	RedisURL    string
@@ -67,7 +72,10 @@ type settings struct {
 // getenv é injetado para o teste fornecer um ambiente falso sem mexer no
 // ambiente real do processo.
 func loadSettings(getenv func(string) string) settings {
-	s := settings{Addr: defaultAddr, ConfigPath: defaultConfigPath}
+	s := settings{Addr: defaultAddr, MetricsAddr: defaultMetricsAddr, ConfigPath: defaultConfigPath}
+	if v := getenv("LLMUX_METRICS_ADDR"); v != "" {
+		s.MetricsAddr = v
+	}
 	if v := getenv("LLMUX_ADDR"); v != "" {
 		s.Addr = v
 	}
@@ -262,15 +270,22 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 	}
 	defer func() { _ = rdb.Close() }()
 
-	// A porta é aberta antes de anunciar o endereço, para uma porta ocupada ser um
-	// erro na subida. Usa context.Background porque o ctx só significa "encerrar".
+	metrics := telemetry.NewMetrics(r.CircuitStates)
+
+	// As portas são abertas antes de anunciar os endereços, para uma porta ocupada ser
+	// um erro na subida. Usa context.Background porque o ctx só significa "encerrar".
 	ln, err := new(net.ListenConfig).Listen(context.Background(), "tcp", s.Addr)
 	if err != nil {
 		return fmt.Errorf("abrindo porta: %w", err)
 	}
-	slog.Info("gateway no ar", "addr", ln.Addr().String())
+	mln, err := new(net.ListenConfig).Listen(context.Background(), "tcp", s.MetricsAddr)
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("abrindo porta de métricas: %w", err)
+	}
+	slog.Info("gateway no ar", "addr", ln.Addr().String(), "metrics_addr", mln.Addr().String())
 
-	return serve(ctx, ln, api.New(api.Options{
+	handler := api.New(api.Options{
 		Router:  r,
 		Prices:  cfg.Prices,
 		Keys:    store.New(pool),
@@ -281,8 +296,38 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		},
 		// O mesmo Redis do rate limit: os dois guardam dados que se reconstroem, e
 		// um segundo Redis seria mais uma peça para operar sem ganho.
-		Cache: cache.New(rdb, cfg.CacheTTL),
-	}).Handler())
+		Cache:   cache.New(rdb, cfg.CacheTTL),
+		Metrics: metrics,
+	}).Handler()
+
+	return serveAll(ctx, []listener{{ln, handler}, {mln, metrics.Handler()}})
+}
+
+type listener struct {
+	ln      net.Listener
+	handler http.Handler
+}
+
+// serveAll atende em todas as portas até o ctx ser cancelado. Se uma falhar, as
+// outras são encerradas: um gateway que perdeu a porta das métricas continuaria
+// atendendo sem ninguém conseguir observá-lo.
+func serveAll(ctx context.Context, listeners []listener) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errs := make(chan error, len(listeners))
+	for _, l := range listeners {
+		go func() { errs <- serve(ctx, l.ln, l.handler) }()
+	}
+
+	var failures []error
+	for range listeners {
+		if err := <-errs; err != nil {
+			failures = append(failures, err)
+			cancel()
+		}
+	}
+	return errors.Join(failures...)
 }
 
 const keysUsage = "uso: gateway keys create -name NOME [-rpm N] [-tpm N] | gateway keys revoke -id ID"

@@ -64,6 +64,36 @@ func New(routes map[string][]Route, attemptTimeout time.Duration, cfg BreakerCon
 	return &Router{routes: routes, breakers: breakers, attemptTimeout: attemptTimeout}
 }
 
+// Estados do circuito em CircuitStates. Números, e não nomes, porque é assim que um
+// gauge do Prometheus guarda um estado.
+const (
+	CircuitClosed   = 0
+	CircuitOpen     = 1
+	CircuitHalfOpen = 2
+)
+
+// CircuitStates devolve o estado do circuito de cada provedor. Quem mede é quem
+// chama: o router não conhece o sistema de métricas.
+func (r *Router) CircuitStates() map[string]int {
+	states := make(map[string]int, len(r.breakers))
+	for name, br := range r.breakers {
+		switch br.current() {
+		case stateOpen:
+			states[name] = CircuitOpen
+		case stateHalfOpen:
+			states[name] = CircuitHalfOpen
+		default:
+			states[name] = CircuitClosed
+		}
+	}
+	return states
+}
+
+// HasModel diz se o modelo lógico existe na config.
+func (r *Router) HasModel(model string) bool {
+	return len(r.routes[model]) > 0
+}
+
 // Chat atende req pelo modelo lógico model, tentando as rotas em ordem. O campo
 // req.Model é ignorado: cada rota define o nome físico.
 func (r *Router) Chat(ctx context.Context, model string, req provider.ChatRequest) (*Result, error) {

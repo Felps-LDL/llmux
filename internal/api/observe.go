@@ -55,10 +55,11 @@ func infoFrom(ctx context.Context) *requestInfo {
 // padrão diz isso, e um 200 no log esconderia que ninguém recebeu a resposta.
 const statusClientClosed = 499
 
-// accessLog escreve uma linha por pedido, com o resultado e a duração. Nunca
-// registra o conteúdo das mensagens nem a chave de API: o conteúdo pode ter dados
-// pessoais, e da chave basta o id.
-func accessLog(next http.Handler) http.Handler {
+// accessLog escreve uma linha por pedido, com o resultado e a duração, e mede o
+// pedido nas métricas: é o único lugar que conhece tudo isso no fim. Nunca registra
+// o conteúdo das mensagens nem a chave de API: o conteúdo pode ter dados pessoais,
+// e da chave basta o id.
+func (s *Server) accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		info := &requestInfo{}
@@ -70,11 +71,20 @@ func accessLog(next http.Handler) http.Handler {
 		if !sw.wroteHeader && r.Context().Err() != nil {
 			status = statusClientClosed
 		}
+		elapsed := time.Since(start)
+		// O modelo vem do cliente. Como rótulo de métrica, um nome inventado criaria
+		// uma série nova no Prometheus, guardada para sempre: mil nomes, mil séries. Só
+		// os modelos da config viram rótulo; o log fica com o nome que veio.
+		metricModel := info.model
+		if metricModel != "" && !s.router.HasModel(metricModel) {
+			metricModel = "unknown"
+		}
+		s.metrics.ObserveRequest(info.provider, metricModel, status, elapsed)
 		attrs := []slog.Attr{
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", status),
-			slog.Int64("duration_ms", time.Since(start).Milliseconds()),
+			slog.Int64("duration_ms", elapsed.Milliseconds()),
 		}
 		if info.keyID != 0 {
 			attrs = append(attrs, slog.Int64("key_id", info.keyID))
