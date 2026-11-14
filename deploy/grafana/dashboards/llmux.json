@@ -236,8 +236,8 @@
     {
       "id": 7,
       "title": "Circuito de cada provedor",
-      "description": "Fechado: recebe tráfego. Aberto: pulado pelo router até o cooldown. Meio-aberto: uma sonda testando se voltou.",
-      "type": "state-timeline",
+      "description": "Estado atual do circuito de cada provedor. Fechado: recebe tráfego. Aberto: pulado pelo router até o cooldown. Meio-aberto: uma sonda testando se o provedor voltou.",
+      "type": "stat",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -268,15 +268,18 @@
               "options": {
                 "0": {
                   "text": "fechado",
-                  "color": "green"
+                  "color": "green",
+                  "index": 0
                 },
                 "1": {
                   "text": "aberto",
-                  "color": "red"
+                  "color": "red",
+                  "index": 1
                 },
                 "2": {
                   "text": "meio-aberto",
-                  "color": "yellow"
+                  "color": "yellow",
+                  "index": 2
                 }
               }
             }
@@ -296,7 +299,16 @@
         },
         "overrides": []
       },
-      "options": {}
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background",
+        "textMode": "value_and_name",
+        "graphMode": "none"
+      }
     }
   ]
 }

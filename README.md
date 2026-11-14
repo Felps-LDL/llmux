@@ -108,6 +108,17 @@ O painel e as fontes de dados são arquivos versionados em
 [`deploy/grafana/`](deploy/grafana/). Toda linha de log tem o `trace_id`, que abre o
 mesmo pedido no Jaeger.
 
+![Painel do llmux no Grafana: pedidos por status, latência p95, tempo até o primeiro token, tokens, custo por chave, acertos do cache e estado dos circuitos](docs/img/grafana.png)
+
+O custo aparece zerado porque o Ollama tem preço zero na config. O pico de latência no
+começo é o primeiro pedido: o Ollama carregando o modelo na memória.
+
+![Trace de um pedido no Jaeger: 5 ms no gateway (autenticação, rate limit e cache) e 5,2 s no Ollama](docs/img/jaeger.png)
+
+No cronograma de um pedido, a autenticação, o rate limit e o cache somam cerca de 5 ms,
+e a chamada ao Ollama ocupa os 5,2 s restantes: o tempo do pedido é do provedor, e não
+do gateway.
+
 E use-a no cabeçalho `Authorization`:
 
 ```
