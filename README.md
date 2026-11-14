@@ -6,10 +6,12 @@ Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
 provedores, com fallback, rate limiting, cache, contabilidade de custo e
 observabilidade.
 
-> **Estado:** Fase 2 de 5 concluída. O gateway atende `POST /v1/chat/completions`, com
+> **Estado:** Fase 3 de 5 concluída. O gateway atende `POST /v1/chat/completions`, com
 > e sem streaming, na frente do Ollama, da OpenAI e da Anthropic, com fallback, circuit
 > breaker, autenticação por chave de API, rate limit de pedidos e tokens, cache exato e
-> cálculo de custo. Observabilidade, filas e Kubernetes são o alvo das próximas fases.
+> cálculo de custo. Cada pedido gera um log JSON, métricas no Prometheus e um trace no
+> Jaeger, com um painel pronto no Grafana. Filas e Kubernetes são o alvo das próximas
+> fases.
 
 ## O alvo
 
@@ -45,7 +47,7 @@ decide quais provedores atendem, em que ordem.
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
 | 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | concluída |
 | 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | concluída |
-| 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
+| 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | concluída |
 | 4 | Fila de uso e worker, `/v1/batches` | — |
 | 5 | Kubernetes com HPA pela fila | — |
 

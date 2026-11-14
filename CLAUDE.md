@@ -18,12 +18,13 @@ testes automatizados, CI/CD, observabilidade, Kubernetes, mensageria.
 
 ## Estado atual
 
-Fase: **3** (iniciada na branch `fase-3`; primeiro componente: slog com request_id)
-Última coisa concluída: Fase 2 fechada no PR #3 (streaming, adaptadores da OpenAI e da
-Anthropic, Postgres com migrations, autenticação, rate limit com reserva e acerto, cache
-exato, ADR 0004). CI verde, inclusive com testcontainers no GitHub. Perguntas de fechamento
-respondidas depois de revisão. Por decisão do Felipe, nas Fases 2 e 3 Claude escreve o
-código e as mensagens de commit; ele revisa e responde perguntas de cenário.
+Fase: **3** (código concluído na branch `fase-3`; falta o PR com CI verde e as perguntas)
+Última coisa concluída: Fase 3 inteira — logs JSON com request_id e trace_id, métricas
+Prometheus numa porta própria (com regras de cardinalidade), tracing OpenTelemetry com um
+span por dependência e por tentativa, e Prometheus, Jaeger e Grafana no compose, com painel
+versionado e prints no README (ADR 0005). Por decisão do Felipe, nas Fases 2 e 3 Claude
+escreve o código e as mensagens de commit; ele revisa e responde perguntas de cenário.
+Pendentes para o fechamento: duas perguntas de cenário da fase e as cinco de entrevista.
 
 > Mantenha estas duas linhas atualizadas ao fim de cada sessão.
 
