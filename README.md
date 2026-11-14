@@ -6,10 +6,12 @@ Gateway de LLMs em Go. API compatível com a da OpenAI na frente de múltiplos
 provedores, com fallback, rate limiting, cache, contabilidade de custo e
 observabilidade.
 
-> **Estado:** Fase 2 de 5 concluída. O gateway atende `POST /v1/chat/completions`, com
+> **Estado:** Fase 3 de 5 concluída. O gateway atende `POST /v1/chat/completions`, com
 > e sem streaming, na frente do Ollama, da OpenAI e da Anthropic, com fallback, circuit
 > breaker, autenticação por chave de API, rate limit de pedidos e tokens, cache exato e
-> cálculo de custo. Observabilidade, filas e Kubernetes são o alvo das próximas fases.
+> cálculo de custo. Cada pedido gera um log JSON, métricas no Prometheus e um trace no
+> Jaeger, com um painel pronto no Grafana. Filas e Kubernetes são o alvo das próximas
+> fases.
 
 ## O alvo
 
@@ -45,7 +47,7 @@ decide quais provedores atendem, em que ordem.
 | 0 | Repo, Makefile, golangci-lint, CI, Dockerfile | concluída |
 | 1 | Interface `Provider`, provedor falso, router com fallback e breaker, custo, config, adaptador do Ollama, endpoint sem streaming | concluída |
 | 2 | Streaming SSE, adaptadores da OpenAI e da Anthropic, autenticação por chave de API, rate limit e cache no Redis, Postgres, testcontainers | concluída |
-| 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | — |
+| 3 | Logs estruturados, métricas Prometheus, tracing OTel, Grafana | concluída |
 | 4 | Fila de uso e worker, `/v1/batches` | — |
 | 5 | Kubernetes com HPA pela fila | — |
 
@@ -81,6 +83,43 @@ resposta traz os cabeçalhos `X-Ratelimit-*` no formato da OpenAI.
 Pedidos com `"temperature": 0` passam por um cache exato, separado por chave de API e
 válido pelo `cache.ttl` da config: um pedido idêntico volta do Redis, sem chamar o
 provedor e com custo zero. O cabeçalho `X-Llmux-Cache` diz `hit`, `miss` ou `bypass`.
+
+Os logs saem em JSON, uma linha por pedido, com status, duração, chave, modelo, provedor
+e cache, mas nunca o conteúdo da conversa nem a chave de API. Toda resposta traz um
+`X-Request-Id`, que liga as linhas de um mesmo pedido; o cliente pode mandar o próprio,
+de até 64 letras, números, `.`, `_` ou `-`, para cruzar os logs dele com os do gateway.
+
+As métricas do Prometheus ficam em `/metrics`, numa porta própria (2112), porque mostram
+custos e ids de chave. No compose, ela fica presa em `127.0.0.1`:
+
+```
+curl localhost:2112/metrics | grep ^llm_
+```
+
+### Observabilidade
+
+O `make up` também sobe o Prometheus, o Jaeger e o Grafana, já configurados:
+
+| O quê | Onde | Para quê |
+|---|---|---|
+| Grafana | <http://localhost:3000> | O painel do llmux abre direto, sem login (para editar: `admin`/`admin`) |
+| Jaeger | <http://localhost:16686> | O cronograma de cada pedido: escolha o serviço `llmux-gateway` |
+| Prometheus | <http://localhost:9090> | As séries cruas, para consultas em PromQL |
+
+O painel e as fontes de dados são arquivos versionados em
+[`deploy/grafana/`](deploy/grafana/). Toda linha de log tem o `trace_id`, que abre o
+mesmo pedido no Jaeger.
+
+![Painel do llmux no Grafana: pedidos por status, latência p95, tempo até o primeiro token, tokens, custo por chave, acertos do cache e estado dos circuitos](docs/img/grafana.png)
+
+O custo aparece zerado porque o Ollama tem preço zero na config. O pico de latência no
+começo é o primeiro pedido: o Ollama carregando o modelo na memória.
+
+![Trace de um pedido no Jaeger: 5 ms no gateway (autenticação, rate limit e cache) e 5,2 s no Ollama](docs/img/jaeger.png)
+
+No cronograma de um pedido, a autenticação, o rate limit e o cache somam cerca de 5 ms,
+e a chamada ao Ollama ocupa os 5,2 s restantes: o tempo do pedido é do provedor, e não
+do gateway.
 
 E use-a no cabeçalho `Authorization`:
 
@@ -132,6 +171,11 @@ Variáveis de ambiente:
 | `LLMUX_CONFIG` | `config.json` | caminho do arquivo de configuração |
 | `LLMUX_DATABASE_URL` | — | obrigatória; o Postgres das chaves de API (`make run` usa o do compose) |
 | `LLMUX_REDIS_URL` | — | obrigatória; o Redis do rate limit (`make run` usa o do compose) |
+| `LLMUX_LOG_LEVEL` | `info` | `debug`, `info`, `warn` ou `error` |
+| `LLMUX_METRICS_ADDR` | `:2112` | endereço do `/metrics` do Prometheus, separado da API |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | coletor OTLP/HTTP dos traces; sem ela, o tracing fica desligado |
+| `OTEL_SERVICE_NAME` | `llmux-gateway` | nome do serviço nos traces |
+| `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | amostragem, pelas variáveis padrão do OpenTelemetry |
 | `OPENAI_API_KEY` | — | chave da OpenAI; obrigatória só se `openai` estiver em `providers` |
 | `ANTHROPIC_API_KEY` | — | chave da Anthropic; obrigatória só se `anthropic` estiver em `providers` |
 
@@ -146,6 +190,9 @@ não sobe se uma rota não tiver preço ou provedor configurado.
 - **Rate limit falha aberto:** com o Redis fora do ar, os pedidos passam sem limite (e
   o log avisa). Um stream interrompido mantém a reserva inteira, porque o uso real não
   chegou.
+- **Custo por chave nas métricas:** `llm_cost_usd_total` tem o id da chave como rótulo, e
+  cada chave multiplica as séries do Prometheus. Serve para centenas ou poucos milhares de
+  chaves; acima disso, o custo por chave pertence ao Postgres, com a fila de uso da Fase 4.
 - **Chaves só pela linha de comando:** não há interface de administração (fora de
   escopo). Cada pedido consulta o banco, sem cache, para uma revogação valer na hora.
 - **Stream interrompido não tem custo:** o uso só chega no fim do stream. No streaming,
@@ -171,6 +218,7 @@ Cada decisão relevante tem um ADR em [`docs/decisions/`](docs/decisions/).
 - [0002 — Precificação pelo modelo da rota](docs/decisions/0002-precificacao-pelo-modelo-da-rota.md)
 - [0003 — Fallback e circuit breaker](docs/decisions/0003-fallback-e-circuit-breaker.md)
 - [0004 — Rate limit com reserva e acerto](docs/decisions/0004-rate-limit-com-reserva-e-acerto.md)
+- [0005 — Observabilidade com os três sinais ligados pelo contexto](docs/decisions/0005-observabilidade-com-tres-sinais.md)
 
 ## Custo
 

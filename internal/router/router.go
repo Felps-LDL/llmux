@@ -5,7 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Felps-LDL/llmux/internal/provider"
 )
@@ -63,11 +69,41 @@ func New(routes map[string][]Route, attemptTimeout time.Duration, cfg BreakerCon
 	return &Router{routes: routes, breakers: breakers, attemptTimeout: attemptTimeout}
 }
 
+// Estados do circuito em CircuitStates. Números, e não nomes, porque é assim que um
+// gauge do Prometheus guarda um estado.
+const (
+	CircuitClosed   = 0
+	CircuitOpen     = 1
+	CircuitHalfOpen = 2
+)
+
+// CircuitStates devolve o estado do circuito de cada provedor. Quem mede é quem
+// chama: o router não conhece o sistema de métricas.
+func (r *Router) CircuitStates() map[string]int {
+	states := make(map[string]int, len(r.breakers))
+	for name, br := range r.breakers {
+		switch br.current() {
+		case stateOpen:
+			states[name] = CircuitOpen
+		case stateHalfOpen:
+			states[name] = CircuitHalfOpen
+		default:
+			states[name] = CircuitClosed
+		}
+	}
+	return states
+}
+
+// HasModel diz se o modelo lógico existe na config.
+func (r *Router) HasModel(model string) bool {
+	return len(r.routes[model]) > 0
+}
+
 // Chat atende req pelo modelo lógico model, tentando as rotas em ordem. O campo
 // req.Model é ignorado: cada rota define o nome físico.
 func (r *Router) Chat(ctx context.Context, model string, req provider.ChatRequest) (*Result, error) {
 	var res *Result
-	err := r.fallback(ctx, model, func(route Route, br *breaker) error {
+	err := r.fallback(ctx, model, func(ctx context.Context, route Route, br *breaker) error {
 		req.Model = route.Model
 		resp, err := r.attempt(ctx, route, req)
 		record(ctx, br, err)
@@ -81,8 +117,10 @@ func (r *Router) Chat(ctx context.Context, model string, req provider.ChatReques
 
 // fallback tenta as rotas de model em ordem até try ter sucesso. try recebe a rota
 // e o breaker dela e é quem informa o resultado ao breaker, porque no streaming o
-// veredito só sai no fim do stream, depois de fallback já ter retornado.
-func (r *Router) fallback(ctx context.Context, model string, try func(Route, *breaker) error) error {
+// veredito só sai no fim do stream, depois de fallback já ter retornado. try recebe
+// também o contexto da tentativa, que carrega o span dela: com o contexto de fora,
+// a chamada ao provedor apareceria no trace fora da tentativa a que pertence.
+func (r *Router) fallback(ctx context.Context, model string, try func(context.Context, Route, *breaker) error) error {
 	routes := r.routes[model]
 	if len(routes) == 0 {
 		return fmt.Errorf("%w: %q", ErrUnknownModel, model)
@@ -98,11 +136,12 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 
 		br := r.breakers[route.Provider.Name()]
 		if !br.allow() {
+			slog.WarnContext(ctx, "circuito aberto, rota pulada", "provider", route.Provider.Name(), "model", model)
 			failures = append(failures, fmt.Errorf("%s: %w", route.Provider.Name(), ErrCircuitOpen))
 			continue
 		}
 
-		err := try(route, br)
+		err := r.tracedTry(ctx, route, br, try)
 		if err == nil {
 			return nil
 		}
@@ -111,10 +150,35 @@ func (r *Router) fallback(ctx context.Context, model string, try func(Route, *br
 		if !shouldFallback(err) {
 			return fmt.Errorf("router: modelo %q: %w", model, err)
 		}
+		// Sem este registro, um pedido atendido pela segunda rota pareceria normal, e
+		// um provedor caindo o tempo todo passaria despercebido.
+		slog.WarnContext(ctx, "tentativa falhou, indo para a próxima rota", "provider", route.Provider.Name(), "model", model, "error", err)
 		failures = append(failures, err)
 	}
 
 	return fmt.Errorf("router: modelo %q: todos os provedores falharam: %w", model, errors.Join(failures...))
+}
+
+// tracedTry envolve uma tentativa num span, para o cronograma do pedido mostrar
+// quanto tempo cada provedor levou e qual falhou. No streaming, o span termina no
+// primeiro pedaço, que é quando a tentativa é decidida.
+func (r *Router) tracedTry(ctx context.Context, route Route, br *breaker, try func(context.Context, Route, *breaker) error) error {
+	// O tracer vem do provedor global a cada chamada, e não de uma variável de pacote:
+	// sem tracing configurado, é o padrão da API, que não faz nada, e o router não sabe
+	// para onde os spans vão. Buscado na hora, ele segue o provedor atual mesmo quando
+	// um teste troca o global.
+	ctx, span := otel.Tracer("github.com/Felps-LDL/llmux/internal/router").Start(ctx, "router.attempt", trace.WithAttributes(
+		attribute.String("llmux.provider", route.Provider.Name()),
+		attribute.String("llmux.model", route.Model),
+	))
+	defer span.End()
+
+	err := try(ctx, route, br)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
 }
 
 // attempt existe para o defer liberar o timer a cada tentativa; dentro do loop de

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/Felps-LDL/llmux/internal/api"
 	"github.com/Felps-LDL/llmux/internal/cache"
@@ -26,11 +29,16 @@ import (
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
 	"github.com/Felps-LDL/llmux/internal/store"
+	"github.com/Felps-LDL/llmux/internal/telemetry"
 )
 
 const (
-	defaultAddr       = ":8080"
-	defaultConfigPath = "config.json"
+	defaultAddr = ":8080"
+	// Porta própria para as métricas, fora da porta pública: elas mostram custos e
+	// ids de chave. 2112 é a do guia do client_golang; a 9090 é a do próprio
+	// Prometheus, que vai rodar ao lado no compose.
+	defaultMetricsAddr = ":2112"
+	defaultConfigPath  = "config.json"
 
 	// Sem limite para ler os cabeçalhos, clientes lentos prenderiam conexões abertas.
 	// Não há WriteTimeout porque ele cortaria uma resposta longa de um LLM; o prazo
@@ -56,15 +64,20 @@ const (
 
 type settings struct {
 	Addr        string
+	MetricsAddr string
 	ConfigPath  string
 	DatabaseURL string
 	RedisURL    string
+	LogLevel    string
 }
 
 // getenv é injetado para o teste fornecer um ambiente falso sem mexer no
 // ambiente real do processo.
 func loadSettings(getenv func(string) string) settings {
-	s := settings{Addr: defaultAddr, ConfigPath: defaultConfigPath}
+	s := settings{Addr: defaultAddr, MetricsAddr: defaultMetricsAddr, ConfigPath: defaultConfigPath}
+	if v := getenv("LLMUX_METRICS_ADDR"); v != "" {
+		s.MetricsAddr = v
+	}
 	if v := getenv("LLMUX_ADDR"); v != "" {
 		s.Addr = v
 	}
@@ -73,13 +86,28 @@ func loadSettings(getenv func(string) string) settings {
 	}
 	s.DatabaseURL = getenv(databaseURLEnv)
 	s.RedisURL = getenv(redisURLEnv)
+	s.LogLevel = getenv("LLMUX_LOG_LEVEL")
 	return s
+}
+
+// setupLogger troca o logger padrão do processo pelo JSON do gateway. É o padrão, e
+// não um logger passado de função em função, porque o request_id viaja no contexto:
+// qualquer camada chama slog.InfoContext e a linha sai com o id.
+func setupLogger(level string, w io.Writer) error {
+	var l slog.Level // o zero é Info
+	if level != "" {
+		if err := l.UnmarshalText([]byte(level)); err != nil {
+			return fmt.Errorf("LLMUX_LOG_LEVEL inválido (use debug, info, warn ou error): %w", err)
+		}
+	}
+	slog.SetDefault(telemetry.NewLogger(w, l))
+	return nil
 }
 
 // openRedis cria o cliente do rate limit. A variável ausente é erro de
 // configuração e impede a subida; o Redis fora do ar, não: o rate limit falha
 // aberto (ver api.Server.reserve), e subir sem ele é melhor que não subir.
-func openRedis(redisURL string, stdout io.Writer) (*redis.Client, error) {
+func openRedis(redisURL string) (*redis.Client, error) {
 	if redisURL == "" {
 		return nil, fmt.Errorf("a variável %s é obrigatória", redisURLEnv)
 	}
@@ -92,8 +120,7 @@ func openRedis(redisURL string, stdout io.Writer) (*redis.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbConnectTimeout)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		// Escrito na saída, e não só num log, para quem sobe o gateway ver na hora.
-		_, _ = fmt.Fprintf(stdout, "aviso: Redis indisponível, rate limit desligado até ele voltar: %v\n", err)
+		slog.Warn("Redis indisponível, rate limit e cache desligados até ele voltar", "error", err)
 	}
 	return rdb, nil
 }
@@ -137,19 +164,19 @@ func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router
 	for name, p := range cfg.Providers {
 		switch name {
 		case "ollama":
-			providers[name] = ollama.New(p.BaseURL, &http.Client{})
+			providers[name] = ollama.New(p.BaseURL, newProviderClient())
 		case "openai":
 			key, err := apiKey(getenv, name, openAIKeyEnv)
 			if err != nil {
 				return nil, err
 			}
-			providers[name] = openai.New(p.BaseURL, key, &http.Client{})
+			providers[name] = openai.New(p.BaseURL, key, newProviderClient())
 		case "anthropic":
 			key, err := apiKey(getenv, name, anthropicKeyEnv)
 			if err != nil {
 				return nil, err
 			}
-			providers[name] = anthropic.New(p.BaseURL, key, &http.Client{})
+			providers[name] = anthropic.New(p.BaseURL, key, newProviderClient())
 		default:
 			return nil, fmt.Errorf("provedor %q não é suportado", name)
 		}
@@ -166,6 +193,16 @@ func buildRouter(cfg *config.Config, getenv func(string) string) (*router.Router
 		Threshold: cfg.BreakerThreshold,
 		Cooldown:  cfg.BreakerCooldown,
 	}), nil
+}
+
+// newProviderClient cria o cliente HTTP dos adaptadores, com um span por chamada.
+// Sem Timeout, pelo motivo documentado nos adaptadores: o prazo vem do contexto.
+// O propagador vazio impede o traceparent de sair: os provedores são terceiros, e o
+// id do nosso trace não serve para eles e revela ids internos.
+func newProviderClient() *http.Client {
+	return &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport,
+		otelhttp.WithPropagators(propagation.NewCompositeTextMapPropagator()),
+	)}
 }
 
 // apiKey lê a chave de um provedor pago. Sem ela, o gateway não sobe: senão cada
@@ -219,9 +256,26 @@ func serve(ctx context.Context, ln net.Listener, handler http.Handler) error {
 // argumentos sem o nome do programa.
 func run(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
 	s := loadSettings(getenv)
+	if err := setupLogger(s.LogLevel, stdout); err != nil {
+		return err
+	}
 	if len(args) > 0 && args[0] == "keys" {
 		return runKeys(args[1:], s, stdout)
 	}
+
+	shutdownTracing, err := telemetry.SetupTracing(context.Background(), getenv)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// Um contexto novo, como no Shutdown do servidor: os últimos spans ainda estão
+		// no buffer do batcher e precisam sair antes de o processo terminar.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(ctx); err != nil {
+			slog.Warn("enviando os últimos spans", "error", err)
+		}
+	}()
 
 	cfg, err := loadConfig(s.ConfigPath)
 	if err != nil {
@@ -236,24 +290,28 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		return err
 	}
 	defer pool.Close()
-	rdb, err := openRedis(s.RedisURL, stdout)
+	rdb, err := openRedis(s.RedisURL)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rdb.Close() }()
 
-	// A porta é aberta antes de anunciar o endereço, para uma porta ocupada ser um
-	// erro na subida. Usa context.Background porque o ctx só significa "encerrar".
+	metrics := telemetry.NewMetrics(r.CircuitStates)
+
+	// As portas são abertas antes de anunciar os endereços, para uma porta ocupada ser
+	// um erro na subida. Usa context.Background porque o ctx só significa "encerrar".
 	ln, err := new(net.ListenConfig).Listen(context.Background(), "tcp", s.Addr)
 	if err != nil {
 		return fmt.Errorf("abrindo porta: %w", err)
 	}
-	if _, err := fmt.Fprintf(stdout, "llmux gateway: addr=%s\n", ln.Addr()); err != nil {
+	mln, err := new(net.ListenConfig).Listen(context.Background(), "tcp", s.MetricsAddr)
+	if err != nil {
 		_ = ln.Close()
-		return fmt.Errorf("escrevendo saída: %w", err)
+		return fmt.Errorf("abrindo porta de métricas: %w", err)
 	}
+	slog.Info("gateway no ar", "addr", ln.Addr().String(), "metrics_addr", mln.Addr().String())
 
-	return serve(ctx, ln, api.New(api.Options{
+	handler := api.New(api.Options{
 		Router:  r,
 		Prices:  cfg.Prices,
 		Keys:    store.New(pool),
@@ -264,8 +322,38 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		},
 		// O mesmo Redis do rate limit: os dois guardam dados que se reconstroem, e
 		// um segundo Redis seria mais uma peça para operar sem ganho.
-		Cache: cache.New(rdb, cfg.CacheTTL),
-	}).Handler())
+		Cache:   cache.New(rdb, cfg.CacheTTL),
+		Metrics: metrics,
+	}).Handler()
+
+	return serveAll(ctx, []listener{{ln, handler}, {mln, metrics.Handler()}})
+}
+
+type listener struct {
+	ln      net.Listener
+	handler http.Handler
+}
+
+// serveAll atende em todas as portas até o ctx ser cancelado. Se uma falhar, as
+// outras são encerradas: um gateway que perdeu a porta das métricas continuaria
+// atendendo sem ninguém conseguir observá-lo.
+func serveAll(ctx context.Context, listeners []listener) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errs := make(chan error, len(listeners))
+	for _, l := range listeners {
+		go func() { errs <- serve(ctx, l.ln, l.handler) }()
+	}
+
+	var failures []error
+	for range listeners {
+		if err := <-errs; err != nil {
+			failures = append(failures, err)
+			cancel()
+		}
+	}
+	return errors.Join(failures...)
 }
 
 const keysUsage = "uso: gateway keys create -name NOME [-rpm N] [-tpm N] | gateway keys revoke -id ID"

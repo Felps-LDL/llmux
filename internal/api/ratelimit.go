@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
@@ -76,11 +78,14 @@ func (s *Server) reserve(w http.ResponseWriter, r *http.Request, req provider.Ch
 	key := keyFrom(r.Context())
 	limits := s.limitsFor(key)
 
-	d, err := s.limiter.Reserve(r.Context(), key.ID, limits, estimateTokens(req))
+	ctx, span := startSpan(r.Context(), "ratelimit.reserve")
+	d, err := s.limiter.Reserve(ctx, key.ID, limits, estimateTokens(req))
+	span.SetAttributes(attribute.Bool("llmux.ratelimit.allowed", err != nil || d.Allowed))
+	endSpan(span, err)
 	if err != nil {
 		// Fail open: o rate limit protege o sistema, mas não autoriza ninguém (a
 		// autenticação já passou). Uma queda do Redis não pode derrubar o produto.
-		log.Printf("api: rate limit indisponível, pedido liberado: %v", err)
+		slog.WarnContext(r.Context(), "rate limit indisponível, pedido liberado", "error", err)
 		return reservation{}, true
 	}
 
@@ -111,6 +116,6 @@ func (res reservation) settle(ctx context.Context, used int) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
 	defer cancel()
 	if err := res.limiter.Settle(ctx, res.keyID, res.limits, res.reserved, used); err != nil {
-		log.Printf("api: acertando rate limit: %v", err)
+		slog.WarnContext(ctx, "acertando rate limit", "error", err)
 	}
 }

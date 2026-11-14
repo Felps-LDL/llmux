@@ -6,15 +6,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/Felps-LDL/llmux/internal/config"
 	"github.com/Felps-LDL/llmux/internal/store"
@@ -109,6 +117,7 @@ func TestRun(t *testing.T) {
 	err := run(ctx, nil, fakeEnv(map[string]string{
 		"LLMUX_CONFIG":       path,
 		"LLMUX_ADDR":         "127.0.0.1:0",
+		"LLMUX_METRICS_ADDR": "127.0.0.1:0",
 		"LLMUX_DATABASE_URL": databaseURL(t),
 		// Uma porta sem Redis: o gateway precisa subir mesmo assim, com um aviso,
 		// porque o rate limit falha aberto.
@@ -117,12 +126,13 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() erro inesperado: %v", err)
 	}
-	if !strings.Contains(out.String(), "rate limit desligado") {
+	if !strings.Contains(out.String(), "Redis indisponível") {
 		t.Errorf("saída = %q, want o aviso do Redis indisponível", out.String())
 	}
 
-	if !strings.Contains(out.String(), "addr=127.0.0.1:") {
-		t.Errorf("saída = %q, deveria conter %q", out.String(), "addr=127.0.0.1:")
+	// A saída é JSON: o endereço é um campo, e não um texto solto.
+	if !strings.Contains(out.String(), `"addr":"127.0.0.1:`) || !strings.Contains(out.String(), `"metrics_addr":"127.0.0.1:`) {
+		t.Errorf("saída = %q, deveria conter os campos addr e metrics_addr", out.String())
 	}
 }
 
@@ -266,5 +276,80 @@ func TestBuildRouterExigeChaveSoDeQuemUsa(t *testing.T) {
 				t.Errorf("erro = %q, deveria citar %q", err, tt.errMentions)
 			}
 		})
+	}
+}
+
+// Verifica a regra dos dois servidores: se um morrer, o outro não pode continuar
+// sozinho. Um gateway atendendo sem a porta de métricas parece saudável para o
+// cliente e invisível para quem o opera.
+func TestServeAllEncerraTudoQuandoUmFalha(t *testing.T) {
+	ok, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("abrindo porta: %v", err)
+	}
+	broken, err := new(net.ListenConfig).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("abrindo porta: %v", err)
+	}
+	// Uma porta já fechada faz o Serve falhar na hora.
+	_ = broken.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serveAll(t.Context(), []listener{{ok, http.NotFoundHandler()}, {broken, http.NotFoundHandler()}})
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("serveAll = nil, want o erro da porta quebrada")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveAll continuou rodando com uma das portas morta")
+	}
+}
+
+// Verifica o cliente dos adaptadores: cada chamada a um provedor vira um span do
+// nosso lado, filho da tentativa, mas o traceparent não sai. Os provedores são
+// terceiros: o id do nosso trace não serve para eles e revela ids internos.
+func TestClienteDosProvedoresMedeSemPropagarOTrace(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prevTP, prevProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	otel.SetTracerProvider(tp)
+	// O propagador global lê e escreve traceparent, como no gateway de verdade: o
+	// teste prova que o cliente ignora o global, e não que o global está vazio.
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() { otel.SetTracerProvider(prevTP); otel.SetTextMapPropagator(prevProp) })
+
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Traceparent")
+	}))
+	defer srv.Close()
+
+	ctx, parent := tp.Tracer("teste").Start(t.Context(), "router.attempt")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, nil)
+	if err != nil {
+		t.Fatalf("montando o pedido: %v", err)
+	}
+	resp, err := newProviderClient().Do(req)
+	if err != nil {
+		t.Fatalf("chamando o provedor: %v", err)
+	}
+	_ = resp.Body.Close()
+	parent.End()
+
+	if got != "" {
+		t.Errorf("o provedor recebeu traceparent %q, want nenhum", got)
+	}
+	var client sdktrace.ReadOnlySpan
+	for _, s := range rec.Ended() {
+		if s.Parent().SpanID() == parent.SpanContext().SpanID() {
+			client = s
+		}
+	}
+	if client == nil {
+		t.Error("sem o span da chamada HTTP, filho da tentativa")
 	}
 }

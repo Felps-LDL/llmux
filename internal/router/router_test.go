@@ -569,3 +569,21 @@ func TestChatAtendePedidosConcorrentes(t *testing.T) {
 		t.Errorf("chamadas em B = %d, want %d", got, requests)
 	}
 }
+
+func TestCircuitStatesMostraOEstadoDeCadaProvedor(t *testing.T) {
+	a := fake.New("a", fake.Fail(provider.ErrUnavailable))
+	b := fake.New("b", fake.Reply(provider.ChatResponse{Content: "olá"}))
+	r := router.New(map[string][]router.Route{
+		"fast": {{Provider: a, Model: "modelo-a"}, {Provider: b, Model: "modelo-b"}},
+	}, time.Second, router.BreakerConfig{Threshold: 1, Cooldown: time.Minute})
+
+	if got := r.CircuitStates(); got["a"] != router.CircuitClosed || got["b"] != router.CircuitClosed {
+		t.Fatalf("antes de qualquer pedido = %v, want os dois fechados", got)
+	}
+	if _, err := r.Chat(t.Context(), "fast", provider.ChatRequest{}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got := r.CircuitStates(); got["a"] != router.CircuitOpen || got["b"] != router.CircuitClosed {
+		t.Errorf("depois da falha de A = %v, want A aberto e B fechado", got)
+	}
+}

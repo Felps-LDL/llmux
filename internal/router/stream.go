@@ -28,7 +28,7 @@ type StreamResult struct {
 // Quem recebe o stream precisa fechá-lo, inclusive depois de um erro.
 func (r *Router) ChatStream(ctx context.Context, model string, req provider.ChatRequest) (*StreamResult, error) {
 	var res *StreamResult
-	err := r.fallback(ctx, model, func(route Route, br *breaker) error {
+	err := r.fallback(ctx, model, func(ctx context.Context, route Route, br *breaker) error {
 		req.Model = route.Model
 		stream, err := r.openStream(ctx, route, req, br)
 		if err == nil {

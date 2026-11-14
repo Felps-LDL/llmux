@@ -7,17 +7,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/Felps-LDL/llmux/internal/cache"
 	"github.com/Felps-LDL/llmux/internal/provider"
 	"github.com/Felps-LDL/llmux/internal/ratelimit"
 	"github.com/Felps-LDL/llmux/internal/router"
+	"github.com/Felps-LDL/llmux/internal/telemetry"
 	"github.com/Felps-LDL/llmux/internal/usage"
 )
 
@@ -35,6 +37,7 @@ type Server struct {
 	limiter       Limiter
 	defaultLimits ratelimit.Limits
 	cache         ResponseCache
+	metrics       *telemetry.Metrics
 }
 
 // Options são as dependências do Server. Uma struct, e não argumentos, porque
@@ -49,23 +52,41 @@ type Options struct {
 	DefaultLimits ratelimit.Limits
 	// Cache nil desliga o cache de respostas.
 	Cache ResponseCache
+	// Metrics nil não mede nada.
+	Metrics *telemetry.Metrics
 }
 
 // New cria um Server.
 func New(o Options) *Server {
-	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits, cache: o.Cache}
+	return &Server{router: o.Router, prices: o.Prices, keys: o.Keys, limiter: o.Limiter, defaultLimits: o.DefaultLimits, cache: o.Cache, metrics: o.Metrics}
 }
 
 // Handler devolve o http.Handler com as rotas da API.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
+	// O id vem antes do access log, para a linha do pedido levar o id; e os dois
+	// valem para todas as rotas, inclusive as que a autenticação recusa.
+	r.Use(requestID, s.accessLog)
 	// Num grupo, para toda rota nova sob /v1 nascer protegida, em vez de depender
 	// de alguém lembrar do middleware.
 	r.Group(func(r chi.Router) {
 		r.Use(s.authenticate)
-		r.Post("/v1/chat/completions", s.chatCompletions)
+		r.Post(chatPath, s.chatCompletions)
 	})
-	return r
+	// Por fora de tudo, para o id, o access log e a autenticação ficarem dentro do
+	// trace. O traceparent de quem chama é lido aqui.
+	return otelhttp.NewHandler(r, "http.server", otelhttp.WithSpanNameFormatter(spanName))
+}
+
+const chatPath = "/v1/chat/completions"
+
+// spanName dá nome ao span do pedido. As ferramentas de trace agrupam por nome, e o
+// caminho cru criaria um nome por URL inventada: só as rotas conhecidas dão nome.
+func spanName(_ string, r *http.Request) string {
+	if r.URL.Path == chatPath {
+		return r.Method + " " + chatPath
+	}
+	return r.Method + " rota desconhecida"
 }
 
 type chatMessage struct {
@@ -144,13 +165,16 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	info := infoFrom(r.Context())
+	info.model = in.Model
+
 	rsv, ok := s.reserve(w, r, req)
 	if !ok {
 		return
 	}
 
 	if in.Stream {
-		w.Header().Set(cacheHeader, "bypass")
+		info.setCache(w, "bypass")
 		s.streamCompletions(w, r, in, req, rsv)
 		return
 	}
@@ -161,15 +185,17 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// O provedor não foi chamado: os tokens reservados voltam inteiros, e o
 			// custo deste pedido é zero.
 			rsv.settle(r.Context(), 0)
-			w.Header().Set(cacheHeader, "hit")
+			info.setCache(w, "hit")
+			s.metrics.CacheHit()
 			w.Header().Set(costHeader, "0")
 			w.Header().Set("X-Llmux-Provider", entry.Provider)
+			info.provider = entry.Provider
 			writeCompletion(w, in.Model, entry.Response)
 			return
 		}
-		w.Header().Set(cacheHeader, "miss")
+		info.setCache(w, "miss")
 	} else {
-		w.Header().Set(cacheHeader, "bypass")
+		info.setCache(w, "bypass")
 	}
 
 	res, err := s.router.Chat(r.Context(), in.Model, req)
@@ -181,8 +207,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	rsv.settle(r.Context(), res.Response.Usage.PromptTokens+res.Response.Usage.CompletionTokens)
 
-	s.setCost(w, res.Provider, res.Model, res.Response.Usage)
+	s.recordUsage(r.Context(), w, res.Provider, res.Model, res.Response.Usage)
 	w.Header().Set("X-Llmux-Provider", res.Provider)
+	info.provider = res.Provider
 	writeCompletion(w, in.Model, *res.Response)
 
 	// Depois de responder: o cliente não precisa esperar a gravação.
@@ -214,17 +241,18 @@ func writeCompletion(w http.ResponseWriter, model string, resp provider.ChatResp
 	})
 }
 
-// setCost põe o custo no cabeçalho de custo; no streaming, ele vai como trailer,
-// declarado antes do corpo. O provedor já respondeu e cobrou: um erro de preço não
-// pode custar a resposta ao cliente. A carga da config impede que isso aconteça em
-// produção.
-func (s *Server) setCost(w http.ResponseWriter, providerName, model string, u provider.Usage) {
+// recordUsage põe o custo no cabeçalho de custo (no streaming, ele vai como trailer,
+// declarado antes do corpo) e mede os tokens e o custo. O provedor já respondeu e
+// cobrou: um erro de preço não pode custar a resposta ao cliente. A carga da config
+// impede que isso aconteça em produção.
+func (s *Server) recordUsage(ctx context.Context, w http.ResponseWriter, providerName, model string, u provider.Usage) {
 	cost, err := s.prices.Cost(providerName, model, u)
 	if err != nil {
-		log.Printf("api: calculando custo: %v", err)
+		slog.ErrorContext(ctx, "calculando custo", "error", err)
 		return
 	}
 	w.Header().Set(costHeader, strconv.FormatInt(int64(cost), 10))
+	s.metrics.ObserveUsage(providerName, model, keyFrom(ctx).ID, u.PromptTokens, u.CompletionTokens, int64(cost))
 }
 
 func toProviderRequest(in chatRequest) (provider.ChatRequest, error) {
@@ -270,7 +298,7 @@ func writeRouterError(ctx context.Context, w http.ResponseWriter, model string, 
 		return
 	}
 
-	log.Printf("api: modelo %q: %v", model, err)
+	slog.WarnContext(ctx, "nenhum provedor atendeu", "error", err)
 
 	switch {
 	case errors.Is(err, router.ErrUnknownModel):
@@ -298,6 +326,8 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("api: escrevendo resposta: %v", err)
+		// Sem contexto, e por isso sem request_id: writeJSON é chamada de muitos
+		// lugares, e uma falha de escrita quase sempre é o cliente que já saiu.
+		slog.Warn("escrevendo resposta", "error", err)
 	}
 }
